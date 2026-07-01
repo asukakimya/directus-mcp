@@ -3,6 +3,7 @@ import type { ToolContext } from '../mcp/server.js';
 import { assertCollectionMutable, assertBatchSize } from '../safety/permissions.js';
 import { normalizeJsonLike, isPlainObject } from '../safety/normalize.js';
 import { batchUpdateItemsWithGuards } from '../directus/mutations.js';
+import { formatMutationText } from '../safety/textFormat.js';
 import { McpUserError } from '../directus/errors.js';
 
 const Input = z.object({
@@ -77,15 +78,23 @@ export const batchUpdateItemsTool = {
         : `${result.summary.ok}/${result.summary.total} ok`,
     });
 
-    const summaryText = result.summary.aborted
-      ? `Batch update ABORTED (all-or-nothing preflight failed): ${result.summary.abortReason ?? ''}`
-      : `Batch update ${result.summary.ok}/${result.summary.total} ok on ${args.collection} (dryRun=${result.summary.dryRun}).`;
+    const text = formatMutationText(
+      {
+        action: result.summary.dryRun ? 'dry_run' : 'update',
+        collection: args.collection,
+        dryRun: result.summary.dryRun,
+        aborted: result.summary.aborted,
+        abortReason: result.summary.abortReason,
+        ok: result.summary.failed === 0 && !result.summary.aborted,
+        summary: result.summary,
+        results: result.results as unknown[],
+      },
+      ctx.config,
+    );
+
     return {
       content: [
-        {
-          type: 'text' as const,
-          text: summaryText,
-        },
+        { type: 'text' as const, text },
       ],
       structuredContent: {
         ok: result.summary.failed === 0 && !result.summary.aborted,

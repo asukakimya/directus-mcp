@@ -3,6 +3,7 @@ import type { ToolContext } from '../mcp/server.js';
 import { assertCollectionMutable } from '../safety/permissions.js';
 import { normalizeJsonLike, isPlainObject } from '../safety/normalize.js';
 import { createItemWithGuards } from '../directus/mutations.js';
+import { formatMutationText } from '../safety/textFormat.js';
 import { McpUserError } from '../directus/errors.js';
 
 const Input = z.object({
@@ -51,14 +52,20 @@ export const createItemTool = {
       ok: true,
     });
 
+    const text = formatMutationText(
+      {
+        action: 'create',
+        collection: args.collection,
+        dryRun: result.dryRun,
+        ok: true,
+        after: result.created,
+      },
+      ctx.config,
+    );
+
     return {
       content: [
-        {
-          type: 'text' as const,
-          text: result.dryRun
-            ? `Dry-run create on ${args.collection}: would write.`
-            : `Created item in ${args.collection}.`,
-        },
+        { type: 'text' as const, text },
       ],
       structuredContent: {
         ok: true,

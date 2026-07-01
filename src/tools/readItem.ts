@@ -3,6 +3,7 @@ import type { ToolContext } from '../mcp/server.js';
 import { assertCollectionReadable } from '../safety/permissions.js';
 import { normalizeJsonLike, isPlainObject } from '../safety/normalize.js';
 import { readItemWithGuards } from '../directus/mutations.js';
+import { formatReadItemText } from '../safety/textFormat.js';
 import { McpUserError } from '../directus/errors.js';
 
 const Input = z.object({
@@ -36,9 +37,11 @@ export const readItemTool = {
       query as Record<string, unknown> | undefined,
     );
 
+    const text = formatReadItemText(args.collection, args.key, result.data, ctx.config);
+
     return {
       content: [
-        { type: 'text' as const, text: `Read item ${args.key} from ${args.collection}.` },
+        { type: 'text' as const, text },
       ],
       structuredContent: {
         ok: true,

@@ -3,6 +3,7 @@ import type { ToolContext } from '../mcp/server.js';
 import { assertCollectionMutable, assertBatchSize } from '../safety/permissions.js';
 import { normalizeJsonLike, isPlainObject } from '../safety/normalize.js';
 import { updateItemsSameDataWithGuards } from '../directus/mutations.js';
+import { formatMutationText } from '../safety/textFormat.js';
 import { McpUserError } from '../directus/errors.js';
 
 const Input = z.object({
@@ -57,14 +58,32 @@ export const updateItemsSameDataTool = {
       ok: true,
     });
 
+    // Convert per-key diff map into a per-item results list for text formatter.
+    const perItemResults: Array<unknown> = Object.entries(result.diff).map(([k, d]) => ({
+      key: k,
+      diff: d,
+    }));
+
+    const text = formatMutationText(
+      {
+        action: 'update',
+        collection: args.collection,
+        dryRun: result.dryRun,
+        ok: true,
+        summary: {
+          total: keys.length,
+          ok: keys.length,
+          failed: 0,
+          dryRun: result.dryRun,
+        },
+        results: perItemResults,
+      },
+      ctx.config,
+    );
+
     return {
       content: [
-        {
-          type: 'text' as const,
-          text: result.dryRun
-            ? `Dry-run bulk update on ${args.collection} (keys: ${keys.join(', ')}).`
-            : `Bulk-updated ${keys.length} items in ${args.collection}.`,
-        },
+        { type: 'text' as const, text },
       ],
       structuredContent: {
         ok: true,

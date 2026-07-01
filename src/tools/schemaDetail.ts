@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ToolContext } from '../mcp/server.js';
 import { assertCollectionReadable } from '../safety/permissions.js';
+import { formatSchemaDetailText } from '../safety/textFormat.js';
 
 const Input = z.object({
   collections: z.array(z.string().min(1)).min(1),
@@ -14,11 +15,35 @@ export const schemaDetailTool = {
   handler: async (ctx: ToolContext, rawArgs: unknown) => {
     const args = Input.parse(rawArgs);
 
-    const out: Record<string, unknown> = {};
+    const collectionInfos: Array<{
+      collection: string;
+      singleton: boolean;
+      primaryKey: string | null;
+      fields: Array<{
+        field: string;
+        type: string;
+        readonly: boolean;
+        required: boolean;
+        isPrimaryKey: boolean;
+        hasRelation: boolean;
+        defaultValue?: unknown;
+        interface?: string | null;
+        special?: string[] | null;
+      }>;
+      relations: Array<{
+        field: string;
+        type: string;
+        relatedCollection?: string;
+        junctionCollection?: string;
+      }>;
+    }> = [];
+
+    const structuredSchemas: Record<string, unknown> = {};
+
     for (const collection of args.collections) {
       assertCollectionReadable(ctx.config, collection);
       const schema = await ctx.schema.loadCollectionSchema(collection);
-      out[collection] = {
+      collectionInfos.push({
         collection: schema.collection,
         singleton: schema.singleton,
         primaryKey: schema.primaryKey,
@@ -30,18 +55,34 @@ export const schemaDetailTool = {
           isPrimaryKey: f.isPrimaryKey ?? false,
           hasRelation: !!f.relation,
           defaultValue: f.defaultValue ?? null,
+          interface: f.interface ?? null,
+          special: f.special ?? null,
         })),
+        relations: schema.relations.map((r) => ({
+          field: r.field,
+          type: r.type,
+          relatedCollection: r.relatedCollection,
+          junctionCollection: r.junctionCollection,
+        })),
+      });
+      structuredSchemas[collection] = {
+        collection: schema.collection,
+        singleton: schema.singleton,
+        primaryKey: schema.primaryKey,
+        fields: Object.values(schema.fields),
         relations: schema.relations,
       };
     }
 
+    const text = formatSchemaDetailText(collectionInfos, ctx.config);
+
     return {
       content: [
-        { type: 'text' as const, text: `Schema detail for ${args.collections.length} collection(s).` },
+        { type: 'text' as const, text },
       ],
       structuredContent: {
         ok: true,
-        schemas: out,
+        schemas: structuredSchemas,
       },
     };
   },

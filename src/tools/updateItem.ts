@@ -3,6 +3,7 @@ import type { ToolContext } from '../mcp/server.js';
 import { assertCollectionMutable } from '../safety/permissions.js';
 import { normalizeJsonLike, isPlainObject } from '../safety/normalize.js';
 import { updateItemWithGuards } from '../directus/mutations.js';
+import { formatMutationText } from '../safety/textFormat.js';
 import { McpUserError } from '../directus/errors.js';
 
 const Input = z.object({
@@ -58,14 +59,22 @@ export const updateItemTool = {
       ok: true,
     });
 
+    const text = formatMutationText(
+      {
+        action: 'update',
+        collection: args.collection,
+        dryRun: result.dryRun,
+        ok: true,
+        before: result.before,
+        after: result.after,
+        diff: result.diff,
+      },
+      ctx.config,
+    );
+
     return {
       content: [
-        {
-          type: 'text' as const,
-          text: result.dryRun
-            ? `Dry-run update on ${args.collection}:${args.key} (wouldWrite=${result.diff ? Object.values(result.diff).some((d) => d.changed) : false}).`
-            : `Updated ${args.collection}:${args.key}.`,
-        },
+        { type: 'text' as const, text },
       ],
       structuredContent: {
         ok: true,

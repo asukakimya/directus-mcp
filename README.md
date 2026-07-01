@@ -20,6 +20,7 @@ Bu MCP **iş kuralı bilmez**. Koleksiyon anlamları (örneğin "şu koleksiyon 
 - **Verify enforcement** — `MUTATION_REQUIRE_VERIFY=true` (default) iken `directus_update_item` ve `directus_batch_update_items` verify olmadan çalışmaz; `directus_update_items_same_data` tamamen reddedilir (per-key verify desteklemez).
 - **All-or-nothing batch apply** — `directus_batch_update_items` ve `directus_create_items` apply (dry_run=false) sırasında önce preflight çalıştırır. Herhangi bir item validation/verify/dedupe hatası verirse **tüm batch abort edilir, sıfır yazma yapılır**. `allow_partial_apply=true` ile eski partial-success davranışına geri dönülebilir.
 - **Single-mode read query** — `directus_read_item` artık `limit`/`page`/`offset` parametrelerini reddeder (tek kayıt endpoint'inde anlamsız; LLM karışıklığını gösterir). `fields`/`deep`/`version` hala destekleniyor.
+- **Token-bounded `content.text`** — Tüm tool response'larında `content.text` artık sadece kısa bir etiket değil; modelin karar vermesi için gereken gerçek sonucu (şema field listesi, dönen kayıtlar, before/after/diff, hata kodları, batch summary) kompakt formatta içerir. LibreChat `structuredContent`'i modele göstermese bile LLM gerçek sonucu görür. Limitler: `SCHEMA_TEXT_MAX_FIELDS=80`, `READ_TEXT_MAX_ROWS=10`, `READ_TEXT_MAX_CHARS=12000`.
 - **Recursive JSON normalisation** — `data`, `query`, `filter`, `deep`, `keys`, `headers`, `verify`, `dedupe`, `items`, `operations` alanları JSON string olarak gelirse otomatik parse.
 - **Schema-first validation** — her yazma işleminde field set şemadan doğrulanır; unknown ve readonly field'lar Directus'a gitmeden reddedilir.
 - **Read-before, verify, diff, after-read** doğrulama zinciri update'lerde.
@@ -104,6 +105,9 @@ node dist/index.js
 | `ALLOW_WILDCARD_FIELDS` | `false` | `fields: ["*"]` izni |
 | `SCHEMA_CACHE_TTL_SECONDS` | `300` | Schema cache TTL |
 | `VERIFY_CASE_INSENSITIVE` | `false` | Verify string compare modu |
+| `SCHEMA_TEXT_MAX_FIELDS` | `80` | `content.text` için şema detayında maksimum field sayısı |
+| `READ_TEXT_MAX_ROWS` | `10` | `content.text` için read/batch sonuçlarında maksimum satır |
+| `READ_TEXT_MAX_CHARS` | `12000` | `content.text` toplam karakter limiti (truncation marker dahil) |
 | `LOG_LEVEL` | `info` | pino log level |
 
 ---
@@ -368,6 +372,7 @@ directus-safe-mcp/
       dryRun.ts                  # dry-run result shape
       verify.ts                  # verify record vs expectations
       audit.ts                   # in-memory audit log
+      textFormat.ts              # compact content.text formatters (token-bounded)
     tools/
       schemaOverview.ts
       schemaDetail.ts
@@ -422,6 +427,7 @@ Tüm kabul kriterleri (spec §25) karşılanır:
 23. ✅ Host allowlist port-tolerant: `mcp.example.com` allowlist'i `mcp.example.com:3333` Host header'ını da kabul eder.
 24. ✅ `batch_update_items` ve `create_items` apply sırasında all-or-nothing preflight (`allow_partial_apply` default false). Abort durumunda sıfır yazma yapılır.
 25. ✅ `read_item` single-mode: `limit`/`page`/`offset` reddedilir, default limit enjekte edilmez.
+26. ✅ `content.text` token-bounded: gerçek sonuç (şema, kayıtlar, diff, hata, summary) kompakt formatta, `SCHEMA_TEXT_MAX_FIELDS` / `READ_TEXT_MAX_ROWS` / `READ_TEXT_MAX_CHARS` limitleriyle.
 
 ---
 

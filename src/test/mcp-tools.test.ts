@@ -6,6 +6,7 @@ import { schemaOverviewTool } from '../../src/tools/schemaOverview.js';
 import { schemaDetailTool } from '../../src/tools/schemaDetail.js';
 import { createItemTool } from '../../src/tools/createItem.js';
 import { createItemsTool } from '../../src/tools/createItems.js';
+import { readItemsTool } from '../../src/tools/readItems.js';
 import { updateItemTool } from '../../src/tools/updateItem.js';
 import { updateItemsSameDataTool } from '../../src/tools/updateItemsSameData.js';
 import { batchUpdateItemsTool } from '../../src/tools/batchUpdateItems.js';
@@ -36,6 +37,9 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     allowWildcardFields: false,
     schemaCacheTtlSeconds: 300,
     verifyCaseInsensitive: false,
+    schemaTextMaxFields: 80,
+    readTextMaxRows: 10,
+    readTextMaxChars: 12000,
     logLevel: 'info',
     ...overrides,
   };
@@ -820,5 +824,164 @@ describe('all-or-nothing preflight (create_items apply)', () => {
 
     const postCalls = spy.mock.calls.filter((c) => (c[1] as RequestInit)?.method === 'POST');
     expect(postCalls.length).toBe(1);
+  });
+});
+
+describe('content.text contains real result data (not just label)', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('schema_detail: content.text contains collection name, primary key, field lines', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await schemaDetailTool.handler(ctx, { collections: ['articles'] });
+    const text = result.content[0]!.text;
+    expect(text).toContain('Collection: articles');
+    expect(text).toContain('Primary key: id');
+    expect(text).toContain('Fields:');
+    expect(text).toContain('- id:');
+    expect(text).toContain('primary');
+    expect(text).toContain('- title:');
+    expect(text).toContain('required');
+  });
+
+  it('read_items: content.text contains collection, count, query, data rows', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': {
+        body: {
+          data: [
+            { id: 1, title: 'Intro to MCP' },
+            { id: 2, title: 'Directus Deep Dive' },
+          ],
+        },
+      },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await readItemsTool.handler(ctx, {
+      collection: 'articles',
+      query: { fields: ['id', 'title'], limit: 10 },
+    });
+    const text = result.content[0]!.text;
+    expect(text).toContain('Collection: articles');
+    expect(text).toContain('Count: 2');
+    expect(text).toContain('Query:');
+    expect(text).toContain('[0]');
+    expect(text).toContain('"id":1');
+    expect(text).toContain('"title":"Intro to MCP"');
+  });
+
+  it('read_items empty result: content.text says "0 items returned"', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: [] } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await readItemsTool.handler(ctx, {
+      collection: 'articles',
+      query: { fields: ['id'], limit: 10 },
+    });
+    const text = result.content[0]!.text;
+    expect(text).toContain('Count: 0');
+    expect(text).toContain('(0 items returned)');
+  });
+
+  it('update_item dry-run: content.text contains before/after/diff', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles/1': { body: { data: { id: 1, title: 'Intro to MCP', slug: null } } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await updateItemTool.handler(ctx, {
+      collection: 'articles',
+      key: 1,
+      verify: { title: 'Intro to MCP' },
+      data: { slug: 'intro-to-mcp' },
+      dry_run: true,
+    });
+    const text = result.content[0]!.text;
+    expect(text).toContain('UPDATE articles — OK (dryRun=true)');
+    expect(text).toContain('Before:');
+    expect(text).toContain('After:');
+    expect(text).toContain('Diff (changed):');
+    expect(text).toContain('slug:');
+  });
+
+  it('batch_update_items aborted: content.text contains ABORTED + abortReason', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles/1': { body: { data: { id: 1, title: 'Intro to MCP', slug: null } } },
+      '/items/articles/2': { body: { data: { id: 2, title: 'WRONG', slug: null } } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await batchUpdateItemsTool.handler(ctx, {
+      collection: 'articles',
+      items: [
+        { key: 1, verify: { title: 'Intro to MCP' }, data: { slug: 'a' } },
+        { key: 2, verify: { title: 'Directus Deep Dive' }, data: { slug: 'b' } },
+      ],
+      dry_run: false,
+    });
+    const text = result.content[0]!.text;
+    expect(text).toContain('ABORTED');
+    expect(text).toContain('Abort reason:');
+    expect(text).toContain('VERIFY_FAILED');
+  });
+
+  it('schema_overview: content.text contains collection list with pk', async () => {
+    const fetchMock = mockFetch({
+      '/collections': { body: collectionsListResponse },
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await schemaOverviewTool.handler(ctx, { include_system: false });
+    const text = result.content[0]!.text;
+    expect(text).toContain('Collections (');
+    expect(text).toContain('articles');
+    expect(text).toContain('pk=id');
+  });
+
+  it('create_item dry-run: content.text contains CREATE + dryRun + after', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await createItemTool.handler(ctx, {
+      collection: 'articles',
+      data: { title: 'New Article' },
+      dry_run: true,
+    });
+    const text = result.content[0]!.text;
+    expect(text).toContain('CREATE articles');
+    expect(text).toContain('dryRun=true');
   });
 });

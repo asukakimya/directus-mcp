@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ToolContext } from '../mcp/server.js';
 import { isSystemCollection } from '../safety/permissions.js';
+import { formatSchemaOverviewText } from '../safety/textFormat.js';
 
 const Input = z.object({
   include_system: z.boolean().optional(),
@@ -26,9 +27,11 @@ export const schemaOverviewTool = {
       relationCount: c.relations.length,
     }));
 
+    const text = formatSchemaOverviewText(overview, ctx.config);
+
     return {
       content: [
-        { type: 'text' as const, text: `Found ${overview.length} collections.` },
+        { type: 'text' as const, text },
       ],
       structuredContent: {
         ok: true,

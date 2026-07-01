@@ -50,6 +50,16 @@ export interface AppConfig {
 
   verifyCaseInsensitive: boolean;
 
+  /**
+   * Text-output limits for `content.text` payloads. These cap how much
+   * real result data we put into the human-readable text part of each
+   * MCP tool response (so the LLM can see it without LibreChat having
+   * to surface structuredContent). Token-bloat protection.
+   */
+  schemaTextMaxFields: number;
+  readTextMaxRows: number;
+  readTextMaxChars: number;
+
   logLevel: string;
 }
 
@@ -160,6 +170,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     allowWildcardFields: parseBool(env.ALLOW_WILDCARD_FIELDS, false),
     schemaCacheTtlSeconds: parseInteger(env.SCHEMA_CACHE_TTL_SECONDS, 300),
     verifyCaseInsensitive: parseBool(env.VERIFY_CASE_INSENSITIVE, false),
+    schemaTextMaxFields: parseInteger(env.SCHEMA_TEXT_MAX_FIELDS, 80),
+    readTextMaxRows: parseInteger(env.READ_TEXT_MAX_ROWS, 10),
+    readTextMaxChars: parseInteger(env.READ_TEXT_MAX_CHARS, 12000),
     logLevel: (env.LOG_LEVEL ?? 'info').trim().toLowerCase(),
   };
 }

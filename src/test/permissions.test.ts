@@ -30,6 +30,9 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     allowWildcardFields: false,
     schemaCacheTtlSeconds: 300,
     verifyCaseInsensitive: false,
+    schemaTextMaxFields: 80,
+    readTextMaxRows: 10,
+    readTextMaxChars: 12000,
     logLevel: 'info',
     ...overrides,
   };

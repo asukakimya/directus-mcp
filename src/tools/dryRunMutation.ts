@@ -3,6 +3,7 @@ import type { ToolContext } from '../mcp/server.js';
 import { assertCollectionMutable, assertBatchSize } from '../safety/permissions.js';
 import { normalizeJsonLike, isPlainObject } from '../safety/normalize.js';
 import { batchUpdateItemsWithGuards } from '../directus/mutations.js';
+import { formatMutationText } from '../safety/textFormat.js';
 import { McpUserError } from '../directus/errors.js';
 
 const Input = z.object({
@@ -31,8 +32,10 @@ export const dryRunMutationTool = {
     }
     assertBatchSize(ctx.config, opsVal.length);
 
-    // Group by collection so we only load each schema once.
-    const byCollection = new Map<string, Array<{ key: string | number; data: Record<string, unknown>; verify?: Record<string, unknown> }>>();
+    const byCollection = new Map<
+      string,
+      Array<{ key: string | number; data: Record<string, unknown>; verify?: Record<string, unknown> }>
+    >();
 
     for (let i = 0; i < opsVal.length; i++) {
       const op = opsVal[i];
@@ -83,9 +86,6 @@ export const dryRunMutationTool = {
         if ('error' in res) {
           results.push({ collection, key: res.key, ok: false, error: res.error });
         } else {
-          // `res` already contains a `collection` field, so spread it
-          // first and let our explicit `collection` win to avoid
-          // "specified more than once" warnings.
           results.push({ ok: true, ...res, collection });
         }
       }
@@ -101,9 +101,29 @@ export const dryRunMutationTool = {
       message: `${results.length} ops`,
     });
 
+    // Build a combined text view across all collections.
+    const totalOps = results.length;
+    const failedOps = results.filter((r) => r.ok === false).length;
+    const text = formatMutationText(
+      {
+        action: 'dry_run',
+        collection: '<multi>',
+        dryRun: true,
+        ok: failedOps === 0,
+        summary: {
+          total: totalOps,
+          ok: totalOps - failedOps,
+          failed: failedOps,
+          dryRun: true,
+        },
+        results: results as unknown[],
+      },
+      ctx.config,
+    );
+
     return {
       content: [
-        { type: 'text' as const, text: `Dry-run plan: ${results.length} operations.` },
+        { type: 'text' as const, text },
       ],
       structuredContent: {
         ok: true,

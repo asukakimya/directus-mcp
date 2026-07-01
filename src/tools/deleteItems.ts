@@ -3,6 +3,7 @@ import type { ToolContext } from '../mcp/server.js';
 import { assertDeleteAllowed } from '../safety/permissions.js';
 import { normalizeJsonLike, isPlainObject } from '../safety/normalize.js';
 import { deleteItemsWithGuards } from '../directus/mutations.js';
+import { formatMutationText } from '../safety/textFormat.js';
 import { McpUserError } from '../directus/errors.js';
 
 const Input = z.object({
@@ -52,8 +53,6 @@ export const deleteItemsTool = {
 
     assertDeleteAllowed(ctx.config, args.collection);
 
-    // Confirm check is cheap and must happen BEFORE any Directus API call
-    // (so a missing/wrong confirm doesn't accidentally trigger schema fetches).
     const expectedConfirm = `DELETE ${args.collection}:${keys.join(',')}`;
     if (args.confirm !== expectedConfirm) {
       throw new McpUserError(
@@ -80,14 +79,25 @@ export const deleteItemsTool = {
       ok: true,
     });
 
+    const text = formatMutationText(
+      {
+        action: 'delete',
+        collection: args.collection,
+        dryRun: result.dryRun,
+        ok: true,
+        summary: {
+          total: keys.length,
+          ok: keys.length,
+          failed: 0,
+          dryRun: result.dryRun,
+        },
+      },
+      ctx.config,
+    );
+
     return {
       content: [
-        {
-          type: 'text' as const,
-          text: result.dryRun
-            ? `Dry-run delete on ${args.collection} (keys: ${keys.join(', ')}).`
-            : `Deleted ${keys.length} items from ${args.collection}.`,
-        },
+        { type: 'text' as const, text },
       ],
       structuredContent: {
         ok: true,
