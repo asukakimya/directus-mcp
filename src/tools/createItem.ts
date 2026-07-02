@@ -9,9 +9,9 @@ import { McpUserError } from '../directus/errors.js';
 const Input = z.object({
   collection: z.string().min(1),
   data: z.unknown().optional(),
-  data_json: z.string().optional(),
+  data_json: z.unknown().optional(),
   dedupe: z.unknown().optional(),
-  dedupe_json: z.string().optional(),
+  dedupe_json: z.unknown().optional(),
   dry_run: z.boolean().optional(),
 });
 

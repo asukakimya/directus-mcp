@@ -12,7 +12,10 @@ import { batchUpdateItemsTool } from '../tools/batchUpdateItems.js';
 import { deleteItemsTool } from '../tools/deleteItems.js';
 import { dryRunMutationTool } from '../tools/dryRunMutation.js';
 import { applyPlanTool } from '../tools/applyPlan.js';
+import { applyPlansTool } from '../tools/applyPlans.js';
 import { cancelPlanTool } from '../tools/cancelPlan.js';
+import { cancelPlansTool } from '../tools/cancelPlans.js';
+import { verifyFieldsEmptyTool } from '../tools/verifyFieldsEmpty.js';
 import { McpUserError, type ErrorCode } from '../directus/errors.js';
 import { DirectusApiError } from '../directus/rest.js';
 import { normalizeJsonLike } from '../safety/normalize.js';
@@ -43,7 +46,10 @@ const TOOL_DEFS: Array<ToolDef> = [
   deleteItemsTool,
   dryRunMutationTool,
   applyPlanTool,
+  applyPlansTool,
   cancelPlanTool,
+  cancelPlansTool,
+  verifyFieldsEmptyTool,
 ];
 
 /**

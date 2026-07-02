@@ -9,7 +9,7 @@ import { McpUserError } from '../directus/errors.js';
 const Input = z.object({
   collection: z.string().min(1),
   query: z.unknown().optional(),
-  query_json: z.string().optional(),
+  query_json: z.unknown().optional(),
 });
 
 export const readItemsTool = {

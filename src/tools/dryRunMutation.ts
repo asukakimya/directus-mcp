@@ -8,7 +8,7 @@ import { McpUserError } from '../directus/errors.js';
 
 const Input = z.object({
   operations: z.unknown().optional(),
-  operations_json: z.string().optional(),
+  operations_json: z.unknown().optional(),
 });
 
 /**

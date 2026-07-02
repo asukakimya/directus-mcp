@@ -10,9 +10,9 @@ const Input = z.object({
   collection: z.string().min(1),
   key: z.union([z.string(), z.number()]),
   data: z.unknown().optional(),
-  data_json: z.string().optional(),
+  data_json: z.unknown().optional(),
   verify: z.unknown().optional(),
-  verify_json: z.string().optional(),
+  verify_json: z.unknown().optional(),
   dry_run: z.boolean().optional(),
 });
 

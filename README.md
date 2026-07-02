@@ -119,7 +119,7 @@ node dist/index.js
 
 ## MCP Tool Listesi
 
-13 tool register edilir (hepsi `directus_` prefix'i ile):
+16 tool register edilir (hepsi `directus_` prefix'i ile):
 
 | Tool | Açıklama |
 |---|---|
@@ -133,13 +133,18 @@ node dist/index.js
 | `directus_update_items_same_data` | Bulk PATCH /items/{collection} (aynı data, multi key) |
 | `directus_batch_update_items` | Per-item different data update (serial PATCH) |
 | `directus_delete_items` | Delete (default kapalı, confirm gerekli) |
-| `directus_dry_run_mutation` | Çoklu operasyon planı (dry-run only) |
-| `directus_apply_plan` | Önceki dry-run plan'ını uygular (gerçek yazma + read-back verification) |
-| `directus_cancel_plan` | Pending plan'ı iptal eder (uygulanamaz hale getirir) |
+| `directus_dry_run_mutation` | Çoklu operasyon planı (dry-run only, planId üretmez) |
+| `directus_apply_plan` | Tek plan uygular (gerçek yazma + read-back verification) |
+| `directus_apply_plans` | Çoklu plan toplu uygular (stop_on_error destekli) |
+| `directus_cancel_plan` | Tek pending plan'ı iptal eder |
+| `directus_cancel_plans` | Çoklu pending plan'ı toplu iptal eder |
+| `directus_verify_fields_empty` | Belirli field'ların boş olduğunu doğrular (post-apply verification) |
 
 ### Tool input kuralları
 
-- `data`, `items`, `keys`, `query`, `filter`, `deep`, `verify`, `dedupe`, `operations` hem native JSON hem de `<field>_json` string formunda kabul edilir. Wrapper otomatik parse eder.
+- `data`, `items`, `keys`, `query`, `filter`, `deep`, `verify`, `dedupe`, `operations` hem native JSON hem de `<field>_json` formunda kabul edilir.
+- **`*_json` alanları string, array VE object kabul eder** (LibreChat uyumluluğu için). Handler otomatik normalize eder.
+- LibreChat bazen `keys_json: [1,2,3]` (array) veya `data_json: {tags:[]}` (object) gönderir — bu artık schema validation'da patlamaz, handler'da normalize edilir.
 - Update işlemlerinde `verify` field'ları mevcut kayıtla eşleşmezse `VERIFY_FAILED` hatası döner; yazma yapılmaz.
 - Unknown field → `UNKNOWN_FIELD` hatası (sessizce drop edilmez).
 - Readonly / system audit field'lar (`user_created`, `date_created`, `user_updated`, `date_updated`) → `READONLY_FIELD` hatası.
@@ -147,6 +152,27 @@ node dist/index.js
 - `directus_*` koleksiyonlarında mutation → `SYSTEM_COLLECTION_DENIED`.
 - Filter operator whitelist dışı → `INVALID_FILTER_OPERATOR`.
 - Wildcard field default olarak reddedilir (`ALLOW_WILDCARD_FIELDS=false`).
+
+### JSON array alanlarında filtre güvenilirliği uyarısı
+
+**Directus JSON/array alanlarında `_nnull`, `_nempty` filtreleri her zaman güvenilir sonuç vermeyebilir.** JSON kolonlar `"null"`, `"[]"`, `"{}"` veya whitespace string saklayabilir; Directus bunları non-null/non-empty sayabilir.
+
+Güvenli yöntem: `directus_verify_fields_empty` tool'unu kullanın. Bu tool kayıtları okur ve client-side boş/dolu kontrolü yapar:
+- `null`, `undefined`, `""`, whitespace-only string, `[]`, `{}` → boş
+- diğer her şey → dolu
+
+Örnek:
+```json
+{
+  "tool": "directus_verify_fields_empty",
+  "input": {
+    "collection": "suppliers",
+    "fields": ["tags", "products"]
+  }
+}
+```
+
+Response'da `nonEmpty` listesi döner — bu kayıtlar tekrar işlenmelidir. Toplu temizlik sonrası "tüm kayıtlar temiz" demeden önce bu tool ile doğrulama yapın.
 
 ### Hata formatı
 
@@ -536,6 +562,11 @@ directus-safe-mcp/
       batchUpdateItems.ts
       deleteItems.ts
       dryRunMutation.ts
+      applyPlan.ts                # single plan apply
+      applyPlans.ts               # batch plan apply (stop_on_error)
+      cancelPlan.ts               # single plan cancel
+      cancelPlans.ts              # batch plan cancel
+      verifyFieldsEmpty.ts        # post-apply verification helper
     test/
       helpers.ts                 # expectErrorCode test helper
       normalize.test.ts
@@ -591,6 +622,11 @@ Tüm kabul kriterleri (spec §25) karşılanır:
 36. ✅ `directus_dry_run_mutation` planId üretmez — README ve agent instruction'da belgelendi.
 37. ✅ Create işlemleri için gerçek read-back: created id bulunur, kayıt tekrar okunur, field değerleri doğrulanır.
 38. ✅ Startup + periyodik (5 dk) plan cleanup: expired/cancelled/applied plan dosyaları temizlenir.
+39. ✅ Batch tool `*_json` alanları string + array + object kabul eder (LibreChat uyumluluğu).
+40. ✅ `directus_apply_plans` tool: çoklu plan toplu apply + `stop_on_error` desteği.
+41. ✅ `directus_cancel_plans` tool: çoklu plan toplu cancel.
+42. ✅ `directus_verify_fields_empty` tool: post-apply verification (JSON array field doluluk kontrolü, client-side).
+43. ✅ JSON array alanlarında `_nnull`/`_nempty` filtrelerinin güvenilmez olduğu README'de belgelendi.
 
 ---
 

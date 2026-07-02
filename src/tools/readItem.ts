@@ -10,7 +10,7 @@ const Input = z.object({
   collection: z.string().min(1),
   key: z.union([z.string(), z.number()]),
   query: z.unknown().optional(),
-  query_json: z.string().optional(),
+  query_json: z.unknown().optional(),
 });
 
 export const readItemTool = {

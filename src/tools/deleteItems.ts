@@ -9,9 +9,11 @@ import { McpUserError } from '../directus/errors.js';
 const Input = z.object({
   collection: z.string().min(1),
   keys: z.unknown().optional(),
-  keys_json: z.string().optional(),
+  // LibreChat sometimes passes arrays/objects to *_json fields instead of strings.
+  // Accept any type here; handler normalises + validates.
+  keys_json: z.unknown().optional(),
   verify: z.unknown().optional(),
-  verify_json: z.string().optional(),
+  verify_json: z.unknown().optional(),
   confirm: z.string().optional(),
   dry_run: z.boolean().optional(),
 });
