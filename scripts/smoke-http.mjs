@@ -138,7 +138,7 @@ async function main() {
     throw new Error(`tools/list did not return tools array: ${JSON.stringify(toolsResp.body)}`);
   }
   console.log(`[http-smoke] tools/list returned ${tools.length} tools`);
-  if (tools.length < 16) throw new Error(`expected >= 16 tools, got ${tools.length}`);
+  if (tools.length < 21) throw new Error(`expected >= 21 tools, got ${tools.length}`);
 
   const expectedNames = [
     'directus_schema_overview', 'directus_schema_detail',
@@ -152,6 +152,11 @@ async function main() {
     'directus_apply_plans',
     'directus_cancel_plans',
     'directus_verify_fields_empty',
+    'directus_verify_fields_value',
+    'directus_update_by_query_plan',
+    'directus_search_items',
+    'directus_apply_plan_bundle',
+    'directus_plan_bundle_status',
   ];
   const missing = expectedNames.filter((n) => !tools.some((t) => t.name === n));
   if (missing.length > 0) throw new Error(`missing tools: ${missing.join(', ')}`);

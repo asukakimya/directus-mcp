@@ -17,6 +17,8 @@ export interface ToolContext {
   audit: import('../safety/audit.js').AuditLog;
   /** Plan store for dry-run → apply flow. */
   plans: import('../safety/plans.js').PlanStore;
+  /** Bundle store for grouping multiple plans (update_by_query_plan etc.). */
+  bundles: import('../safety/bundles.js').BundleStore;
 }
 
 /**

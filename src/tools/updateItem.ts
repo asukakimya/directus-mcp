@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { ToolContext } from '../mcp/server.js';
 import { assertCollectionMutable } from '../safety/permissions.js';
 import { normalizeJsonLike, isPlainObject } from '../safety/normalize.js';
-import { updateItemWithGuards } from '../directus/mutations.js';
+import { updateItemWithGuards, autoGenerateVerify } from '../directus/mutations.js';
 import { formatMutationText } from '../safety/textFormat.js';
 import { McpUserError } from '../directus/errors.js';
 
@@ -13,6 +13,14 @@ const Input = z.object({
   data_json: z.unknown().optional(),
   verify: z.unknown().optional(),
   verify_json: z.unknown().optional(),
+  /**
+   * If `verify` is not provided but `verify_fields` is, the MCP reads
+   * the current record and auto-generates the verify object server-side.
+   * This prevents the model from guessing wrong verify values.
+   * Example: verify_fields: ["company"] → verify: { company: "O KIMYA" }
+   */
+  verify_fields: z.array(z.string().min(1)).optional(),
+  verify_fields_json: z.unknown().optional(),
   dry_run: z.boolean().optional(),
 });
 
@@ -34,7 +42,7 @@ export const updateItemTool = {
     }
 
     const rawVerify = args.verify_json !== undefined ? args.verify_json : args.verify;
-    const verify = normalizeJsonLike(rawVerify);
+    let verify = normalizeJsonLike(rawVerify);
     if (verify !== undefined && verify !== null && !isPlainObject(verify)) {
       throw new McpUserError('INVALID_DATA_TYPE', 'verify must be a JSON object', {
         collection: args.collection,
@@ -42,8 +50,22 @@ export const updateItemTool = {
       });
     }
 
+    // If verify is not provided but verify_fields is, auto-generate verify
+    // from the current record. This prevents the model from guessing wrong
+    // verify values (e.g., { ai_info: true }).
+    const rawVerifyFields = args.verify_fields_json !== undefined ? args.verify_fields_json : args.verify_fields;
+    const verifyFieldsVal = normalizeJsonLike(rawVerifyFields);
+    let verifyFields: string[] | undefined;
+    if (Array.isArray(verifyFieldsVal)) {
+      verifyFields = verifyFieldsVal.filter((f): f is string => typeof f === 'string');
+    }
+
     assertCollectionMutable(ctx.config, args.collection);
     const schema = await ctx.schema.loadCollectionSchema(args.collection);
+
+    if ((!verify || Object.keys(verify as Record<string, unknown>).length === 0) && verifyFields && verifyFields.length > 0) {
+      verify = await autoGenerateVerify(ctx.client, schema, args.key, verifyFields);
+    }
 
     const dryRun = args.dry_run ?? ctx.config.mutationDryRunDefault;
 

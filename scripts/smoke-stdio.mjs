@@ -78,8 +78,8 @@ async function main() {
     console.log(`  - ${t.name}`);
   }
 
-  if (tools.length < 16) {
-    throw new Error(`expected >= 16 tools, got ${tools.length}`);
+  if (tools.length < 21) {
+    throw new Error(`expected >= 21 tools, got ${tools.length}`);
   }
   const expectedNames = [
     'directus_schema_overview',
@@ -98,13 +98,18 @@ async function main() {
     'directus_apply_plans',
     'directus_cancel_plans',
     'directus_verify_fields_empty',
+    'directus_verify_fields_value',
+    'directus_update_by_query_plan',
+    'directus_search_items',
+    'directus_apply_plan_bundle',
+    'directus_plan_bundle_status',
   ];
   const missing = expectedNames.filter((n) => !tools.some((t) => t.name === n));
   if (missing.length > 0) {
     throw new Error(`missing tools: ${missing.join(', ')}`);
   }
 
-  console.log('[smoke] OK — all 16 tools registered and responding');
+  console.log('[smoke] OK — all 21 tools registered and responding');
 
   child.kill();
   process.exit(0);

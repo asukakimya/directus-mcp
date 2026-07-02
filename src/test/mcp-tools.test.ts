@@ -43,6 +43,10 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     schemaTextMaxFields: 80,
     readTextMaxRows: 10,
     readTextMaxChars: 12000,
+    readCompactFullMaxRows: 200,
+    readCompactCellMaxChars: 160,
+    readCompactTextMaxChars: 30000,
+    readCompactFormat: 'lines' as const,
     applyRequiresPlan: false,
     planStore: 'memory' as const,
     planStoreDir: '/tmp/test-plans',
@@ -881,15 +885,13 @@ describe('content.text contains real result data (not just label)', () => {
       query: { fields: ['id', 'title'], limit: 10 },
     });
     const text = result.content[0]!.text;
-    expect(text).toContain('Collection: articles');
-    expect(text).toContain('Count: 2');
-    expect(text).toContain('Query:');
-    expect(text).toContain('[0]');
-    expect(text).toContain('"id":1');
-    expect(text).toContain('"title":"Intro to MCP"');
+    expect(text).toContain('COLLECTION: articles');
+    expect(text).toContain('RETURNED_RECORDS: 2');
+    expect(text).toContain('id=1');
+    expect(text).toContain('title=Intro to MCP');
   });
 
-  it('read_items empty result: content.text says "0 items returned"', async () => {
+  it('read_items empty result: content.text says RETURNED_RECORDS: 0', async () => {
     const fetchMock = mockFetch({
       '/collections/articles': { body: articlesSchemaResponse },
       '/fields/articles': { body: articlesFieldsResponse },
@@ -904,8 +906,7 @@ describe('content.text contains real result data (not just label)', () => {
       query: { fields: ['id'], limit: 10 },
     });
     const text = result.content[0]!.text;
-    expect(text).toContain('Count: 0');
-    expect(text).toContain('(0 items returned)');
+    expect(text).toContain('RETURNED_RECORDS: 0');
   });
 
   it('update_item dry-run: content.text contains before/after/diff', async () => {
@@ -992,5 +993,304 @@ describe('content.text contains real result data (not just label)', () => {
     const text = result.content[0]!.text;
     expect(text).toContain('CREATE articles');
     expect(text).toContain('dryRun=true');
+  });
+});
+
+describe('read_items: output_mode + compact_full + metadata', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('compact_full mode renders all records in text', async () => {
+    const records = Array.from({ length: 5 }, (_, i) => ({ id: i + 1, title: `Article ${i + 1}` }));
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: records } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await readItemsTool.handler(ctx, {
+      collection: 'articles',
+      query: { fields: ['id', 'title'], limit: 100 },
+      output_mode: 'compact_full',
+      purpose: 'list',
+    });
+    const text = result.content[0]!.text;
+    expect(text).toContain('OUTPUT_MODE: compact_full');
+    expect(text).toContain('RETURNED_IN_TEXT: 5');
+    expect(text).toContain('TEXT_RECORDS_COMPLETE: true');
+    expect(text).toContain('SAFE_FOR_FULL_LIST_ANSWER: true');
+    // All 5 records should be in text.
+    expect(text).toContain('id=1');
+    expect(text).toContain('id=5');
+    expect(text).toContain('Article 1');
+    expect(text).toContain('Article 5');
+  });
+
+  it('auto mode with short fields + few records → compact_full', async () => {
+    const records = Array.from({ length: 3 }, (_, i) => ({ id: i + 1, title: `A${i + 1}` }));
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: records } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await readItemsTool.handler(ctx, {
+      collection: 'articles',
+      query: { fields: ['id', 'title'], limit: 100 },
+    });
+    const text = result.content[0]!.text;
+    expect(text).toContain('OUTPUT_MODE: compact_full');
+    expect(text).toContain('RETURNED_IN_TEXT: 3');
+  });
+
+  it('preview mode shows warning + NEXT_ACTION', async () => {
+    const records = Array.from({ length: 15 }, (_, i) => ({ id: i + 1, title: `A${i + 1}` }));
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: records } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await readItemsTool.handler(ctx, {
+      collection: 'articles',
+      query: { fields: ['id', 'title'], limit: 100 },
+      output_mode: 'preview',
+    });
+    const text = result.content[0]!.text;
+    expect(text).toContain('OUTPUT_MODE: preview');
+    expect(text).toContain('TEXT_RECORDS_COMPLETE: false');
+    expect(text).toContain('SAFE_FOR_FULL_LIST_ANSWER: false');
+    expect(text).toContain('Do not infer hidden records');
+    expect(text).toContain('NEXT_ACTION');
+    expect(text).toContain('compact_full');
+  });
+
+  it('hasMore + nextOffset when limited results', async () => {
+    const records = Array.from({ length: 10 }, (_, i) => ({ id: i + 1, title: `A${i + 1}` }));
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: records, meta: { total_count: 49 } } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await readItemsTool.handler(ctx, {
+      collection: 'articles',
+      query: { fields: ['id', 'title'], limit: 10 },
+      output_mode: 'compact_full',
+    });
+    const text = result.content[0]!.text;
+    expect(text).toContain('TOTAL_AVAILABLE: 49');
+    expect(text).toContain('HAS_MORE: true');
+    expect(text).toContain('NEXT_OFFSET: 10');
+    expect(text).toContain('SAFE_FOR_FULL_LIST_ANSWER: false');
+  });
+
+  it('count_only mode returns no data rows', async () => {
+    const records = Array.from({ length: 5 }, (_, i) => ({ id: i + 1, title: `A${i + 1}` }));
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: records } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await readItemsTool.handler(ctx, {
+      collection: 'articles',
+      query: { fields: ['id'], limit: 100 },
+      output_mode: 'count_only',
+    });
+    const text = result.content[0]!.text;
+    expect(text).toContain('OUTPUT_MODE: count_only');
+    expect(text).toContain('RETURNED_IN_TEXT: 0');
+    expect(text).not.toContain('DATA:');
+  });
+
+  it('structuredContent contains readMeta', async () => {
+    const records = [{ id: 1, title: 'A' }];
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: records } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const result = await readItemsTool.handler(ctx, {
+      collection: 'articles',
+      query: { fields: ['id', 'title'], limit: 100 },
+      output_mode: 'compact_full',
+    });
+    const meta = result.structuredContent.readMeta as Record<string, unknown>;
+    expect(meta).toBeDefined();
+    expect(meta.returnedRecords).toBe(1);
+    expect(meta.textRecordsComplete).toBe(true);
+    expect(meta.safeForFullListAnswer).toBe(true);
+  });
+});
+
+describe('error NEXT_ACTION hints', () => {
+  it('VERIFY_REQUIRED error is thrown with correct code', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles/1': { body: { data: { id: 1, title: 'A' } } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext(); // mutationRequireVerify: true
+    // The handler throws McpUserError; the MCP wrapper in tools.ts
+    // catches it and adds NEXT_ACTION to the text. Here we verify
+    // the error code is correct — the NEXT_ACTION formatting is
+    // tested via the wrapper's describeError function.
+    await expectErrorCode(
+      () => updateItemTool.handler(ctx, {
+        collection: 'articles',
+        key: 1,
+        data: { title: 'B' },
+        dry_run: true,
+      }),
+      'VERIFY_REQUIRED',
+    );
+  });
+});
+
+describe('directus_search_items: *_json support', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('search_fields_json as JSON string array works', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: [{ id: 1, title: 'Intro to MCP', slug: null }] } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const { searchItemsTool } = await import('../../src/tools/searchItems.js');
+    const result = await searchItemsTool.handler(ctx, {
+      collection: 'articles',
+      search: 'MCP',
+      search_fields_json: '["title","slug"]',
+      fields_json: '["id","title"]',
+    });
+
+    expect(result.structuredContent.ok).toBe(true);
+    expect(result.structuredContent.searchFields).toEqual(['title', 'slug']);
+    expect(result.content[0]!.text).toContain('SEARCH: MCP');
+    expect(result.content[0]!.text).toContain('SEARCH_FIELDS: title, slug');
+  });
+
+  it('fields_json as JSON string array works', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: [{ id: 1, title: 'Test' }] } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const { searchItemsTool } = await import('../../src/tools/searchItems.js');
+    const result = await searchItemsTool.handler(ctx, {
+      collection: 'articles',
+      search: 'test',
+      fields_json: '["id","title"]',
+    });
+
+    expect(result.structuredContent.ok).toBe(true);
+  });
+
+  it('malformed search_fields_json → INVALID_QUERY', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const { searchItemsTool } = await import('../../src/tools/searchItems.js');
+    await expectErrorCode(
+      () => searchItemsTool.handler(ctx, {
+        collection: 'articles',
+        search: 'test',
+        search_fields_json: '{"not":"array"}',
+      }),
+      'INVALID_QUERY',
+    );
+  });
+
+  it('auto-selects search_fields from schema when not provided', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: [{ id: 1, title: 'MCP Guide' }] } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext();
+    const { searchItemsTool } = await import('../../src/tools/searchItems.js');
+    const result = await searchItemsTool.handler(ctx, {
+      collection: 'articles',
+      search: 'MCP',
+    });
+
+    // articles schema has 'title' field (string type) → should be auto-selected.
+    expect(result.structuredContent.searchFields).toContain('title');
+  });
+});
+
+describe('formatReadItemsTextV2: final truncate consistency', () => {
+  it('if final text truncated, metadata forces safe=false', async () => {
+    const { formatReadItemsTextV2 } = await import('../../src/safety/textFormat.js');
+    // Create 50 records with long titles to exceed small char limit.
+    const records = Array.from({ length: 50 }, (_, i) => ({
+      id: i + 1,
+      title: `Article ${i + 1} with a very long title that takes up lots of characters to push past the limit`,
+    }));
+
+    const result = formatReadItemsTextV2({
+      collection: 'articles',
+      query: { limit: 100 },
+      records,
+      totalAvailable: 50,
+      hasMore: false,
+      nextOffset: null,
+      outputMode: 'compact_full',
+      purpose: 'list',
+      limits: {
+        schemaTextMaxFields: 80,
+        readTextMaxRows: 10,
+        readTextMaxChars: 12000,
+        readCompactFullMaxRows: 200,
+        readCompactCellMaxChars: 160,
+        readCompactTextMaxChars: 500, // very small limit to force truncation
+        readCompactFormat: 'lines',
+      },
+    });
+
+    // Text should be within limit.
+    expect(result.text.length).toBeLessThanOrEqual(500);
+    // Metadata should NOT say "safe for full list".
+    expect(result.meta.safeForFullListAnswer).toBe(false);
+    expect(result.meta.truncatedForText).toBe(true);
+    expect(result.meta.textRecordsComplete).toBe(false);
   });
 });

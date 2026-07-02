@@ -3,6 +3,7 @@ import { DirectusRestClient } from './directus/rest.js';
 import { SchemaService } from './directus/schemaService.js';
 import { createAuditLog } from './safety/audit.js';
 import { createPlanStore } from './safety/plans.js';
+import { createBundleStore } from './safety/bundles.js';
 import type { ToolContext } from './mcp/server.js';
 import { connectTransport, makeServerFactory } from './mcp/transports.js';
 
@@ -38,6 +39,7 @@ async function main(): Promise<void> {
   const schemaService = new SchemaService(client, config.schemaCacheTtlSeconds * 1000);
   const audit = createAuditLog(logger, config);
   const plans = createPlanStore(config.planStore, config.planStoreDir, config.planMaxBytes, logger);
+  const bundles = createBundleStore(config.planStore, config.planStoreDir, logger);
 
   // Best-effort cleanup of expired/cancelled plans on startup.
   // Errors are logged but do not block startup.
@@ -65,6 +67,7 @@ async function main(): Promise<void> {
     schema: schemaService,
     audit,
     plans,
+    bundles,
   };
 
   const serverFactory = makeServerFactory(ctx);

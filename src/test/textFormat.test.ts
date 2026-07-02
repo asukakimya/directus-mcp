@@ -159,14 +159,14 @@ describe('formatReadItemsText', () => {
     const text = formatReadItemsText('articles', { limit: 5 }, { data: many }, smallLimits);
     expect(text).toContain('[0]');
     expect(text).toContain('[1]');
-    expect(text).toContain('more rows truncated');
+    expect(text).toContain('more records hidden from text preview — do not infer');
   });
 
   it('respects READ_TEXT_MAX_CHARS', () => {
     const huge = Array.from({ length: 100 }, (_, i) => ({ id: i, body: 'x'.repeat(500) }));
     const text = formatReadItemsText('articles', { limit: 100 }, { data: huge }, limits);
     expect(text.length).toBeLessThanOrEqual(12000);
-    expect(text).toMatch(/truncated/);
+    expect(text).toMatch(/hidden from text preview|truncated/);
   });
 });
 

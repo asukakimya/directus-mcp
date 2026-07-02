@@ -119,7 +119,7 @@ node dist/index.js
 
 ## MCP Tool Listesi
 
-16 tool register edilir (hepsi `directus_` prefix'i ile):
+20 tool register edilir (hepsi `directus_` prefix'i ile):
 
 | Tool | Açıklama |
 |---|---|
@@ -129,16 +129,20 @@ node dist/index.js
 | `directus_read_item` | Tek item okuma |
 | `directus_create_item` | Tek item create (dedupe + dry-run + plan destekli) |
 | `directus_create_items` | Batch create (serial, per-item result, all-or-nothing preflight) |
-| `directus_update_item` | Tek item update (read-before → verify → diff → write → after-read) |
+| `directus_update_item` | Tek item update (verify_fields auto-gen destekli) |
 | `directus_update_items_same_data` | Bulk PATCH /items/{collection} (aynı data, multi key) |
 | `directus_batch_update_items` | Per-item different data update (serial PATCH) |
 | `directus_delete_items` | Delete (default kapalı, confirm gerekli) |
 | `directus_dry_run_mutation` | Çoklu operasyon planı (dry-run only, planId üretmez) |
+| `directus_update_by_query_plan` | **Query ile toplu update planı + bundle** (model kayıt listesi üretmez) |
 | `directus_apply_plan` | Tek plan uygular (gerçek yazma + read-back verification) |
 | `directus_apply_plans` | Çoklu plan toplu uygular (stop_on_error destekli) |
+| `directus_apply_plan_bundle` | **Bundle'ı toplu uygular** (already-applied tolerant + verification) |
 | `directus_cancel_plan` | Tek pending plan'ı iptal eder |
 | `directus_cancel_plans` | Çoklu pending plan'ı toplu iptal eder |
-| `directus_verify_fields_empty` | Belirli field'ların boş olduğunu doğrular (post-apply verification) |
+| `directus_plan_bundle_status` | **Bundle durumunu sorgular** (pending/applied/expired/cancelled) |
+| `directus_verify_fields_empty` | Belirli field'ların boş olduğunu doğrular |
+| `directus_verify_fields_value` | **Belirli field'ların beklenen değere eşit olduğunu doğrular** (deep equality) |
 
 ### Tool input kuralları
 
@@ -301,6 +305,77 @@ Delete işlemleri de aynı plan akışını kullanır:
 ### Local debug (plan akışı olmadan)
 
 `APPLY_REQUIRES_PLAN=false` ile direct `dry_run:false` çağrılabilir (eski davranış). Sadece local debug için önerilir.
+
+---
+
+## Bundle Flow: Query-Based Toplu Update (düşük parametreli modeller için)
+
+Bu akış, modelin kayıt listesi toplamasını, verify üretmesini, planId'leri takip etmesini engeller. Model sadece niyeti söyler.
+
+### Akış
+
+1. **Model**: `directus_update_by_query_plan` çağırır (query + data + verify_fields)
+2. **MCP**: kayıtları okur, verify üretir, chunk'lara böler, planlar oluşturur, **bundle_id** döndürür
+3. **Kullanıcı**: onay verir
+4. **Model**: `directus_apply_plan_bundle({ bundle_id, confirm: true })` çağırır (payload tekrar üretmez)
+5. **MCP**: tüm planları uygular, read-back + bundle-level verification yapar
+6. **Response**: `applied: true`, `written: true`, `readBackStatus: 'ok'`, `verification: { ok: true }`
+
+### Örnek
+
+```json
+// 1. Model: "Tüm tedarikçilerin tags alanı ['test'] olsun"
+{
+  "tool": "directus_update_by_query_plan",
+  "input": {
+    "collection": "suppliers",
+    "query": { "fields": ["id", "company"], "sort": ["id"], "limit": 100 },
+    "data": { "tags": ["test"] },
+    "verify_fields": ["company"],
+    "dry_run": true,
+    "chunk_size": 25
+  }
+}
+// Response: { "bundleId": "bundle_...", "planIds": [...], "totalMatched": 49, ... }
+
+// 2. Kullanıcı: "onaylıyorum"
+
+// 3. Model: apply bundle (payload tekrar üretmez!)
+{
+  "tool": "directus_apply_plan_bundle",
+  "input": { "bundle_id": "bundle_...", "confirm": true }
+}
+// Response: { "applied": true, "written": true, "readBackStatus": "ok", "verification": { "ok": true, "totalChecked": 49 } }
+```
+
+### Neden bundle?
+
+- Model planId listesi takip etmez — tek `bundle_id` yeterli
+- Model kayıt listesi üretmez — MCP server-side okur
+- Model verify üretmez — MCP `verify_fields`'tan otomatik üretir
+- Model id tahmini yapamaz — sadece gerçek dönen kayıtlar kullanılır
+- `PLAN_ALREADY_APPLIED` durumu otomatik verification ile çözülür
+
+### `verify_fields` auto-generation
+
+`directus_update_item` ve `directus_update_by_query_plan` artık `verify_fields` parametresi destekliyor. `verify` nesnesi vermek yerine field adları verilir; MCP kaydı okur ve verify'yi server-side üretir.
+
+```json
+{
+  "collection": "suppliers",
+  "key": 61,
+  "verify_fields": ["company"],
+  "data": { "ai_info": "# O KIMYA" },
+  "dry_run": true
+}
+```
+
+MCP içeride şunu üretir:
+```json
+{ "verify": { "company": "O KIMYA" } }
+```
+
+Bu, modelin `verify: { ai_info: true }` gibi hatalı verify'ler üretmesini engeller.
 
 ---
 
@@ -550,6 +625,7 @@ directus-safe-mcp/
       audit.ts                   # in-memory audit log
       textFormat.ts              # compact content.text formatters (token-bounded)
       plans.ts                   # MutationPlan + PlanStore (file/memory) + checksum
+      bundles.ts                 # PlanBundle + BundleStore + status computation
     tools/
       schemaOverview.ts
       schemaDetail.ts
@@ -564,9 +640,13 @@ directus-safe-mcp/
       dryRunMutation.ts
       applyPlan.ts                # single plan apply
       applyPlans.ts               # batch plan apply (stop_on_error)
+      applyPlanBundle.ts          # bundle apply (already-applied tolerant + verification)
       cancelPlan.ts               # single plan cancel
       cancelPlans.ts              # batch plan cancel
-      verifyFieldsEmpty.ts        # post-apply verification helper
+      planBundleStatus.ts         # bundle status query
+      updateByQueryPlan.ts        # query-based batch plan + bundle creation
+      verifyFieldsEmpty.ts        # post-apply verification helper (fields empty)
+      verifyFieldsValue.ts        # post-apply verification helper (fields match expected)
     test/
       helpers.ts                 # expectErrorCode test helper
       normalize.test.ts
@@ -627,6 +707,13 @@ Tüm kabul kriterleri (spec §25) karşılanır:
 41. ✅ `directus_cancel_plans` tool: çoklu plan toplu cancel.
 42. ✅ `directus_verify_fields_empty` tool: post-apply verification (JSON array field doluluk kontrolü, client-side).
 43. ✅ JSON array alanlarında `_nnull`/`_nempty` filtrelerinin güvenilmez olduğu README'de belgelendi.
+44. ✅ `directus_update_by_query_plan` tool: query ile toplu update planı + bundle (model kayıt listesi üretmez).
+45. ✅ `directus_apply_plan_bundle` tool: bundle toplu apply + already-applied tolerant + verification.
+46. ✅ `directus_plan_bundle_status` tool: bundle durum sorgulama.
+47. ✅ `directus_verify_fields_value` tool: deep equality ile field değer kontrolü.
+48. ✅ `verify_fields` auto-generation: update_item + update_by_query_plan (model verify üretmez).
+49. ✅ Bundle sistemi: `bundle_id` ile tek referans (model planId listesi takip etmez).
+50. ✅ NEXT ACTION text'leri tüm mutation/apply response'larında.
 
 ---
 

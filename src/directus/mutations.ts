@@ -26,10 +26,29 @@ export async function readItemsWithGuards(
   config: AppConfig,
   schema: CollectionSchema,
   query: Record<string, unknown> | undefined,
-): Promise<{ data: unknown; query: Record<string, unknown>; warnings: string[] }> {
+): Promise<{
+  data: unknown;
+  query: Record<string, unknown>;
+  warnings: string[];
+  records: unknown[];
+  directusMeta?: Record<string, unknown>;
+  returnedRecords: number;
+  totalAvailable: number | null;
+}> {
   const { query: normalized, warnings } = normalizeAndValidateReadQuery(config, schema, query);
   const result = await restReadItems(client, schema.collection, normalized);
-  return { data: result, query: normalized, warnings };
+  const records = extractDataArray(result);
+  const directusMeta = extractMeta(result);
+  const totalAvailable = extractTotalCount(directusMeta, records.length, normalized);
+  return {
+    data: result,
+    query: normalized,
+    warnings,
+    records,
+    directusMeta,
+    returnedRecords: records.length,
+    totalAvailable,
+  };
 }
 
 export async function readItemWithGuards(
@@ -644,8 +663,40 @@ function extractDataArray(response: unknown): Record<string, unknown>[] {
 
 function extractItem(response: unknown): Record<string, unknown> | null {
   if (isPlainObject(response)) {
-    if (isPlainObject(response.data)) return response.data;
+    // If response has a `data` key, return it (null if data is null/undefined).
+    if ('data' in response) {
+      const data = (response as Record<string, unknown>).data;
+      if (isPlainObject(data)) return data;
+      return null;
+    }
+    // No `data` key — treat the response itself as the record.
     return response;
+  }
+  return null;
+}
+
+function extractMeta(response: unknown): Record<string, unknown> | undefined {
+  if (isPlainObject(response) && 'meta' in response) {
+    const meta = (response as Record<string, unknown>).meta;
+    if (isPlainObject(meta)) return meta as Record<string, unknown>;
+  }
+  return undefined;
+}
+
+function extractTotalCount(
+  meta: Record<string, unknown> | undefined,
+  recordCount: number,
+  query: Record<string, unknown>,
+): number | null {
+  // Directus meta may have total_count or filter_count.
+  if (meta) {
+    if (typeof meta.total_count === 'number') return meta.total_count;
+    if (typeof meta.filter_count === 'number') return meta.filter_count;
+  }
+  // If no meta, estimate from record count vs limit.
+  const limit = typeof query.limit === 'number' ? query.limit : undefined;
+  if (limit !== undefined && recordCount < limit) {
+    return recordCount;
   }
   return null;
 }
@@ -663,6 +714,72 @@ function errorToJson(err: unknown): { code: string; message: string; details: un
 /* ----------------------------------------------------------------
  * Read-back verification helpers (used by directus_apply_plan)
  * ---------------------------------------------------------------- */
+
+/**
+ * Auto-generate a verify object from a record by extracting the specified
+ * verify_fields. This is used when the caller passes `verify_fields`
+ * instead of an explicit `verify` object — the MCP reads the current
+ * record and builds the verify object server-side, preventing the model
+ * from guessing wrong verify values.
+ *
+ * Returns null if the record is null (not found).
+ */
+export function buildVerifyFromRecord(
+  record: Record<string, unknown> | null,
+  verifyFields: string[],
+): Record<string, unknown> | null {
+  if (!record) return null;
+  const verify: Record<string, unknown> = {};
+  for (const field of verifyFields) {
+    if (field in record) {
+      verify[field] = record[field];
+    }
+  }
+  return verify;
+}
+
+/**
+ * Read a record and auto-generate a verify object from verify_fields.
+ * Used by update_item / batch_update_items / update_by_query_plan when
+ * the caller passes `verify_fields` instead of `verify`.
+ */
+export async function autoGenerateVerify(
+  client: DirectusRestClient,
+  schema: CollectionSchema,
+  key: string | number,
+  verifyFields: string[],
+): Promise<Record<string, unknown>> {
+  // Validate verify fields exist in schema before reading.
+  for (const field of verifyFields) {
+    if (!schema.fields[field]) {
+      throw new McpUserError('UNKNOWN_FIELD', `Unknown verify field '${field}' for collection '${schema.collection}'`, {
+        collection: schema.collection,
+        field,
+      });
+    }
+  }
+
+  // Read only PK + verify fields — no wildcard, no unnecessary long fields.
+  const pk = schema.primaryKey ?? 'id';
+  const readFields = Array.from(new Set([pk, ...verifyFields]));
+  const raw = await restReadItem(client, schema.collection, key, { fields: readFields });
+  const record = extractItem(raw);
+  if (!record) {
+    throw new McpUserError('NOT_FOUND', `Cannot auto-generate verify: item ${key} not found in '${schema.collection}'`, {
+      collection: schema.collection,
+      key,
+    });
+  }
+  const verify = buildVerifyFromRecord(record, verifyFields);
+  if (!verify || Object.keys(verify).length === 0) {
+    throw new McpUserError('INVALID_QUERY', `Cannot auto-generate verify: none of verify_fields ${JSON.stringify(verifyFields)} exist in record ${key}`, {
+      collection: schema.collection,
+      key,
+      verifyFields,
+    });
+  }
+  return verify;
+}
 
 /**
  * After an update, re-read the record and verify that each changed

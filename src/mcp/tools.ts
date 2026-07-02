@@ -13,9 +13,14 @@ import { deleteItemsTool } from '../tools/deleteItems.js';
 import { dryRunMutationTool } from '../tools/dryRunMutation.js';
 import { applyPlanTool } from '../tools/applyPlan.js';
 import { applyPlansTool } from '../tools/applyPlans.js';
+import { applyPlanBundleTool } from '../tools/applyPlanBundle.js';
 import { cancelPlanTool } from '../tools/cancelPlan.js';
 import { cancelPlansTool } from '../tools/cancelPlans.js';
+import { planBundleStatusTool } from '../tools/planBundleStatus.js';
 import { verifyFieldsEmptyTool } from '../tools/verifyFieldsEmpty.js';
+import { verifyFieldsValueTool } from '../tools/verifyFieldsValue.js';
+import { updateByQueryPlanTool } from '../tools/updateByQueryPlan.js';
+import { searchItemsTool } from '../tools/searchItems.js';
 import { McpUserError, type ErrorCode } from '../directus/errors.js';
 import { DirectusApiError } from '../directus/rest.js';
 import { normalizeJsonLike } from '../safety/normalize.js';
@@ -38,6 +43,7 @@ const TOOL_DEFS: Array<ToolDef> = [
   schemaDetailTool,
   readItemsTool,
   readItemTool,
+  searchItemsTool,
   createItemTool,
   createItemsTool,
   updateItemTool,
@@ -47,9 +53,13 @@ const TOOL_DEFS: Array<ToolDef> = [
   dryRunMutationTool,
   applyPlanTool,
   applyPlansTool,
+  applyPlanBundleTool,
   cancelPlanTool,
   cancelPlansTool,
+  planBundleStatusTool,
   verifyFieldsEmptyTool,
+  verifyFieldsValueTool,
+  updateByQueryPlanTool,
 ];
 
 /**
@@ -93,16 +103,47 @@ export function registerAllTools(server: McpServer, ctx: ToolContext): void {
 }
 
 function describeError(err: unknown): string {
+  let baseMsg: string;
   if (err instanceof McpUserError) {
-    return `[${err.errorCode}] ${err.message}`;
+    baseMsg = `[${err.errorCode}] ${err.message}`;
+  } else if (err instanceof DirectusApiError) {
+    baseMsg = `Directus API error ${err.status} ${err.method} ${err.url}`;
+  } else if (err instanceof Error) {
+    baseMsg = `${err.name}: ${err.message}`;
+  } else {
+    baseMsg = String(err);
   }
-  if (err instanceof DirectusApiError) {
-    return `Directus API error ${err.status} ${err.method} ${err.url}`;
+
+  // Add NEXT_ACTION hints for common error codes to guide low-param models.
+  if (err instanceof McpUserError) {
+    const nextAction = getNextActionForError(err.errorCode);
+    if (nextAction) {
+      return `${baseMsg}\n\nNEXT_ACTION:\n${nextAction}`;
+    }
   }
-  if (err instanceof Error) {
-    return `${err.name}: ${err.message}`;
+
+  return baseMsg;
+}
+
+function getNextActionForError(code: string): string | null {
+  switch (code) {
+    case 'VERIFY_REQUIRED':
+      return '- If this is a single update, call update tool with verify_fields:["company"] or a verify object matching current record values.\n- Do not use {"ai_info": true}.\n- If this is a bulk update, prefer directus_update_by_query_plan with verify_fields.';
+    case 'VERIFY_FAILED':
+      return '- The verify object does not match the current record.\n- Re-read the target record or use verify_fields to let MCP generate verify.\n- Do not assume markdown/special characters caused this error.';
+    case 'APPLY_REQUIRES_PLAN':
+      return '- First call mutation with dry_run:true.\n- Use returned plan_id or bundle_id.\n- On approval, call apply_plan or apply_plan_bundle.';
+    case 'PLAN_ALREADY_APPLIED':
+      return '- Do not apply this plan again.\n- Verify the target state.\n- If target state is correct, report already applied and verified.';
+    case 'PLAN_ALREADY_IN_PROGRESS':
+      return '- Another apply is in progress for this plan. Wait and check status.';
+    case 'UNKNOWN_FIELD':
+      return '- Check field names against directus_schema_detail.\n- Do not guess field names.';
+    case 'INVALID_DATA_TYPE':
+      return '- Do not repeat the same payload.\n- Try *_json fallback or use server-side query plan tool.';
+    default:
+      return null;
   }
-  return String(err);
 }
 
 function toErrorStructured(err: unknown): {

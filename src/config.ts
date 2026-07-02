@@ -60,6 +60,15 @@ export interface AppConfig {
   readTextMaxRows: number;
   readTextMaxChars: number;
 
+  /** Compact-full mode: max rows to render fully in text. */
+  readCompactFullMaxRows: number;
+  /** Compact-full mode: max chars per cell before omitting. */
+  readCompactCellMaxChars: number;
+  /** Compact-full mode: total text char limit. */
+  readCompactTextMaxChars: number;
+  /** Compact-full format: 'lines' (default) or 'table'. */
+  readCompactFormat: 'lines' | 'table';
+
   /**
    * Dry-run approval plan flow.
    *
@@ -193,6 +202,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     schemaTextMaxFields: parseInteger(env.SCHEMA_TEXT_MAX_FIELDS, 80),
     readTextMaxRows: parseInteger(env.READ_TEXT_MAX_ROWS, 10),
     readTextMaxChars: parseInteger(env.READ_TEXT_MAX_CHARS, 12000),
+    readCompactFullMaxRows: parseInteger(env.READ_COMPACT_FULL_MAX_ROWS, 200),
+    readCompactCellMaxChars: parseInteger(env.READ_COMPACT_CELL_MAX_CHARS, 160),
+    readCompactTextMaxChars: parseInteger(env.READ_COMPACT_TEXT_MAX_CHARS, 30000),
+    readCompactFormat: (env.READ_COMPACT_FORMAT ?? 'lines').trim().toLowerCase() === 'table' ? 'table' : 'lines',
     applyRequiresPlan: parseBool(env.APPLY_REQUIRES_PLAN, true),
     planStore: (env.PLAN_STORE ?? 'file').trim().toLowerCase() === 'memory' ? 'memory' : 'file',
     planStoreDir: (env.PLAN_STORE_DIR ?? '/tmp/directus-safe-mcp-plans').trim(),

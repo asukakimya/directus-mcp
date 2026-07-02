@@ -16,6 +16,10 @@ export interface TextLimits {
   schemaTextMaxFields: number;
   readTextMaxRows: number;
   readTextMaxChars: number;
+  readCompactFullMaxRows: number;
+  readCompactCellMaxChars: number;
+  readCompactTextMaxChars: number;
+  readCompactFormat: 'lines' | 'table';
 }
 
 /**
@@ -181,7 +185,7 @@ export function formatReadItemsText(
   }
   if (records.length > limits.readTextMaxRows) {
     bodyLines.push(
-      `…[${records.length - limits.readTextMaxRows} more rows truncated]`,
+      `…[${records.length - limits.readTextMaxRows} more records hidden from text preview — do not infer]`,
     );
   }
   header.push('Data:');
@@ -405,4 +409,334 @@ export function formatMutationText(
   }
 
   return truncateText(parts.join('\n'), limits.readTextMaxChars);
+}
+
+/* ----------------------------------------------------------------
+ * Read items text V2 — text-first metadata + compact_full renderer
+ * ---------------------------------------------------------------- */
+
+export type OutputMode = 'auto' | 'preview' | 'compact_full' | 'summary' | 'count_only' | 'json_full';
+export type ReadPurpose = 'auto' | 'list' | 'detail' | 'mutation_candidates' | 'verification' | 'count';
+
+export interface ReadTextMeta {
+  totalAvailable: number | null;
+  returnedRecords: number;
+  returnedInText: number;
+  textRecordsComplete: boolean;
+  truncatedForText: boolean;
+  hasMore: boolean;
+  nextOffset: number | null;
+  outputMode: OutputMode;
+  purpose: ReadPurpose;
+  safeForFullListAnswer: boolean;
+  safeForBatchMutation: boolean;
+  omittedLongFields: string[];
+  fieldValuesComplete: boolean;
+}
+
+const DEFAULT_SHORT_FIELD_NAMES = new Set([
+  'id', 'company', 'name', 'title', 'code', 'stock_code',
+  'website', 'url', 'status', 'phone', 'email',
+  'date_created', 'date_updated', 'offer_date',
+  'price', 'currency', 'currencyName', 'amount', 'stock',
+  'slug', 'firstname', 'lastname',
+]);
+
+const DEFAULT_LONG_FIELD_NAMES = new Set([
+  'ai_info', 'description', 'system_prompt', 'messages',
+  'products', 'content', 'body', 'markdown', 'text', 'notes', 'data', 'metadata',
+]);
+
+function isLongValue(value: unknown, cellMaxChars: number): boolean {
+  if (typeof value === 'string') return value.length > cellMaxChars;
+  if (Array.isArray(value)) return JSON.stringify(value).length > cellMaxChars;
+  if (value && typeof value === 'object') return JSON.stringify(value).length > cellMaxChars;
+  return false;
+}
+
+function isLongField(fieldName: string, value: unknown, cellMaxChars: number): boolean {
+  if (DEFAULT_LONG_FIELD_NAMES.has(fieldName)) return true;
+  if (DEFAULT_SHORT_FIELD_NAMES.has(fieldName)) return false;
+  return isLongValue(value, cellMaxChars);
+}
+
+function formatCellValue(value: unknown, cellMaxChars: number): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') {
+    return value.length > cellMaxChars ? value.slice(0, cellMaxChars - 3) + '...' : value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  const json = JSON.stringify(value);
+  if (json.length > cellMaxChars) {
+    return `[omitted, chars=${json.length}]`;
+  }
+  return json;
+}
+
+/**
+ * Format read_items text with text-first metadata + compact_full renderer.
+ * This is the V2 formatter that solves the "model sees only 10 rows" problem.
+ */
+export function formatReadItemsTextV2(input: {
+  collection: string;
+  query: Record<string, unknown>;
+  records: unknown[];
+  totalAvailable: number | null;
+  hasMore: boolean;
+  nextOffset: number | null;
+  outputMode: OutputMode;
+  purpose: ReadPurpose;
+  limits: TextLimits;
+}): { text: string; meta: ReadTextMeta } {
+  const { collection, records, totalAvailable, hasMore, nextOffset, outputMode, purpose, limits } = input;
+
+  const returnedRecords = records.length;
+  const omittedLongFields: string[] = [];
+
+  // Determine effective output mode.
+  let effectiveMode = outputMode;
+  if (effectiveMode === 'auto') {
+    if (purpose === 'count') {
+      effectiveMode = 'count_only';
+    } else if (returnedRecords <= limits.readCompactFullMaxRows) {
+      effectiveMode = 'compact_full';
+    } else {
+      effectiveMode = 'preview';
+    }
+  }
+
+  let returnedInText = 0;
+  let textRecordsComplete = false;
+  let truncatedForText = false;
+  let safeForFullListAnswer = false;
+  let safeForBatchMutation = false;
+
+  const headerLines: string[] = [];
+  headerLines.push('TOOL_RESULT: directus_read_items');
+  headerLines.push(`COLLECTION: ${collection}`);
+  headerLines.push(`TOTAL_AVAILABLE: ${totalAvailable ?? 'unknown'}`);
+  headerLines.push(`RETURNED_RECORDS: ${returnedRecords}`);
+  headerLines.push(`HAS_MORE: ${hasMore}`);
+  headerLines.push(`NEXT_OFFSET: ${nextOffset ?? 'null'}`);
+  headerLines.push(`OUTPUT_MODE: ${effectiveMode}`);
+  headerLines.push(`PURPOSE: ${purpose}`);
+
+  if (effectiveMode === 'count_only') {
+    returnedInText = 0;
+    textRecordsComplete = true;
+    safeForFullListAnswer = false;
+    safeForBatchMutation = false;
+    headerLines.push(`RETURNED_IN_TEXT: 0`);
+    headerLines.push(`TEXT_RECORDS_COMPLETE: true`);
+    headerLines.push(`TRUNCATED_FOR_TEXT: false`);
+    headerLines.push(`SAFE_FOR_FULL_LIST_ANSWER: false`);
+    headerLines.push(`SAFE_FOR_BATCH_MUTATION: false`);
+    headerLines.push('');
+    headerLines.push('NEXT_ACTION:');
+    headerLines.push('- Use count for planning. Re-read with output_mode:"compact_full" for actual records.');
+    return {
+      text: headerLines.join('\n'),
+      meta: buildMeta(effectiveMode, purpose, 0, true, false, false, false, [], true, totalAvailable, returnedRecords, hasMore, nextOffset),
+    };
+  }
+
+  if (effectiveMode === 'compact_full' && returnedRecords <= limits.readCompactFullMaxRows && !hasMore) {
+    // Char-budget-aware compact_full renderer.
+    const fields = extractFieldList(records);
+
+    // Check for long fields.
+    for (const f of fields) {
+      let hasLong = false;
+      for (const r of records) {
+        const val = (r as Record<string, unknown>)?.[f];
+        if (isLongField(f, val, limits.readCompactCellMaxChars)) {
+          hasLong = true;
+          break;
+        }
+      }
+      if (hasLong && !omittedLongFields.includes(f)) {
+        omittedLongFields.push(f);
+      }
+    }
+
+    const displayFields = fields.filter((f) => !omittedLongFields.includes(f));
+    const fieldValuesComplete = omittedLongFields.length === 0;
+
+    // Build data lines with char budget tracking.
+    const dataLines: string[] = ['DATA:'];
+    let charBudget = limits.readCompactTextMaxChars;
+    // Reserve ~500 chars for header + warnings + next_action.
+    charBudget -= 500;
+    let actualRowsRendered = 0;
+
+    for (let i = 0; i < records.length; i++) {
+      const r = records[i] as Record<string, unknown>;
+      const parts = displayFields.map((f) => `${f}=${formatCellValue(r?.[f], limits.readCompactCellMaxChars)}`);
+      const line = `${i + 1}. ${parts.join(' | ')}`;
+      if (line.length + 1 > charBudget) {
+        break; // char budget exhausted
+      }
+      dataLines.push(line);
+      charBudget -= line.length + 1;
+      actualRowsRendered++;
+    }
+
+    // Add omitted long fields note.
+    for (const f of omittedLongFields) {
+      dataLines.push(`${f}=[long field omitted]`);
+    }
+
+    returnedInText = actualRowsRendered;
+    const allRowsRendered = actualRowsRendered === returnedRecords;
+    textRecordsComplete = allRowsRendered && !hasMore && fieldValuesComplete;
+    truncatedForText = !allRowsRendered || hasMore || !fieldValuesComplete;
+    safeForFullListAnswer = textRecordsComplete && !truncatedForText;
+    safeForBatchMutation = false;
+
+    // Build header with real metadata.
+    const metaLines: string[] = [];
+    metaLines.push(`RETURNED_IN_TEXT: ${returnedInText}`);
+    metaLines.push(`TEXT_RECORDS_COMPLETE: ${textRecordsComplete}`);
+    metaLines.push(`TRUNCATED_FOR_TEXT: ${truncatedForText}`);
+    metaLines.push(`SAFE_FOR_FULL_LIST_ANSWER: ${safeForFullListAnswer}`);
+    metaLines.push(`SAFE_FOR_BATCH_MUTATION: ${safeForBatchMutation}`);
+    metaLines.push(`FIELD_VALUES_COMPLETE: ${fieldValuesComplete}`);
+    if (omittedLongFields.length > 0) {
+      metaLines.push(`OMITTED_LONG_FIELDS: ${omittedLongFields.join(', ')}`);
+    }
+    headerLines.push(...metaLines);
+
+    // Warnings.
+    if (!allRowsRendered && actualRowsRendered < returnedRecords) {
+      headerLines.push('');
+      headerLines.push('WARNING:');
+      headerLines.push(`Compact full output exceeded READ_COMPACT_TEXT_MAX_CHARS.`);
+      headerLines.push(`Only ${actualRowsRendered}/${returnedRecords} records were rendered in text.`);
+      headerLines.push('Do not answer a full-list request from this incomplete text.');
+      headerLines.push('Use narrower fields, lower limit with pagination, or increase READ_COMPACT_TEXT_MAX_CHARS.');
+    }
+    if (!fieldValuesComplete) {
+      headerLines.push('');
+      headerLines.push('WARNING:');
+      headerLines.push('Some requested field values were omitted from text because they are long.');
+      headerLines.push('Do not answer as if omitted fields were fully shown.');
+      headerLines.push('Read a specific item/detail if full long field content is required.');
+    }
+
+    headerLines.push('');
+    headerLines.push(...dataLines);
+    headerLines.push('');
+    headerLines.push('NEXT_ACTION:');
+    if (safeForFullListAnswer) {
+      headerLines.push('- You may answer the user\'s full-list request from this text.');
+    }
+    headerLines.push('- Do not use this text to build a bulk update payload; use directus_update_by_query_plan for mutations.');
+
+    const fullText = headerLines.join('\n');
+    const truncatedFinal = truncateText(fullText, limits.readCompactTextMaxChars);
+    // Final safety: if truncateText actually cut the text, force safe=false.
+    if (truncatedFinal.length < fullText.length) {
+      textRecordsComplete = false;
+      truncatedForText = true;
+      safeForFullListAnswer = false;
+    }
+    return {
+      text: truncatedFinal,
+      meta: buildMeta(effectiveMode, purpose, returnedInText, textRecordsComplete, truncatedForText, safeForFullListAnswer, safeForBatchMutation, omittedLongFields, fieldValuesComplete, totalAvailable, returnedRecords, hasMore, nextOffset),
+    };
+  }
+
+  // Preview mode (default fallback).
+  const previewRows = Math.min(returnedRecords, limits.readTextMaxRows);
+  const dataLines: string[] = [];
+  dataLines.push('DATA:');
+  for (let i = 0; i < previewRows; i++) {
+    const r = records[i] as Record<string, unknown>;
+    const json = JSON.stringify(r);
+    dataLines.push(`[${i}] ${json}`);
+  }
+
+  returnedInText = previewRows;
+  textRecordsComplete = previewRows === returnedRecords && !hasMore;
+  truncatedForText = previewRows < returnedRecords || hasMore;
+  safeForFullListAnswer = false;
+  safeForBatchMutation = false;
+
+  headerLines.push(`RETURNED_IN_TEXT: ${returnedInText}`);
+  headerLines.push(`TEXT_RECORDS_COMPLETE: ${textRecordsComplete}`);
+  headerLines.push(`TRUNCATED_FOR_TEXT: ${truncatedForText}`);
+  headerLines.push(`SAFE_FOR_FULL_LIST_ANSWER: ${safeForFullListAnswer}`);
+  headerLines.push(`SAFE_FOR_BATCH_MUTATION: ${safeForBatchMutation}`);
+  headerLines.push(`FIELD_VALUES_COMPLETE: true`);
+  headerLines.push('');
+  if (truncatedForText) {
+    headerLines.push('WARNING:');
+    headerLines.push('This text output is only a preview. Do not infer hidden records.');
+    headerLines.push('Do not answer a full-list request from this preview.');
+    headerLines.push('Do not build batch mutation items from this preview.');
+    headerLines.push('');
+    headerLines.push('NEXT_ACTION:');
+    headerLines.push('- For full list answer, call directus_read_items with output_mode:"compact_full" and short fields.');
+    headerLines.push('- For bulk mutation, use directus_update_by_query_plan instead of manually enumerating records.');
+  } else {
+    headerLines.push('NEXT_ACTION:');
+    headerLines.push('- You may answer from this text.');
+  }
+  headerLines.push('');
+  headerLines.push(...dataLines);
+  if (returnedRecords > previewRows) {
+    headerLines.push(`…[${returnedRecords - previewRows} more records hidden from text preview — do not infer]`);
+  }
+
+  const fullText = headerLines.join('\n');
+  const truncatedFinal = truncateText(fullText, limits.readTextMaxChars);
+  // Final safety: if truncateText actually cut the text, force safe=false.
+  if (truncatedFinal.length < fullText.length) {
+    textRecordsComplete = false;
+    truncatedForText = true;
+    safeForFullListAnswer = false;
+  }
+  return {
+    text: truncatedFinal,
+    meta: buildMeta(effectiveMode, purpose, returnedInText, textRecordsComplete, truncatedForText, safeForFullListAnswer, safeForBatchMutation, omittedLongFields, true, totalAvailable, returnedRecords, hasMore, nextOffset),
+  };
+}
+
+function buildMeta(
+  outputMode: OutputMode,
+  purpose: ReadPurpose,
+  returnedInText: number,
+  textRecordsComplete: boolean,
+  truncatedForText: boolean,
+  safeForFullListAnswer: boolean,
+  safeForBatchMutation: boolean,
+  omittedLongFields: string[],
+  fieldValuesComplete: boolean,
+  totalAvailable: number | null,
+  returnedRecords: number,
+  hasMore: boolean,
+  nextOffset: number | null,
+): ReadTextMeta {
+  return {
+    totalAvailable,
+    returnedRecords,
+    returnedInText,
+    textRecordsComplete,
+    truncatedForText,
+    hasMore,
+    nextOffset,
+    outputMode,
+    purpose,
+    safeForFullListAnswer,
+    safeForBatchMutation,
+    omittedLongFields,
+    fieldValuesComplete,
+  };
+}
+
+function extractFieldList(records: unknown[]): string[] {
+  if (records.length === 0) return [];
+  const first = records[0] as Record<string, unknown> | null;
+  if (!first || typeof first !== 'object') return [];
+  return Object.keys(first);
 }
