@@ -19,7 +19,7 @@ const Input = z.object({
 export const updateItemTool = {
   name: 'directus_update_item',
   description:
-    'Update a single item by primary key. Reads the record first, runs optional verify check, validates fields, computes diff, and (unless dry_run=true) writes via PATCH. After-write re-read returns the updated record. Returns before/after/diff.',
+    'Update a single item by primary key. Reads the record first, runs optional verify check, validates fields, computes diff, and (unless dry_run=true) writes via PATCH. After-write re-read returns the updated record. Returns before/after/diff. When APPLY_REQUIRES_PLAN=true (default), dry_run=false is rejected — use dry_run=true then directus_apply_plan.',
   inputSchema: Input,
   handler: async (ctx: ToolContext, rawArgs: unknown) => {
     const args = Input.parse(rawArgs);
@@ -45,8 +45,18 @@ export const updateItemTool = {
     assertCollectionMutable(ctx.config, args.collection);
     const schema = await ctx.schema.loadCollectionSchema(args.collection);
 
+    const dryRun = args.dry_run ?? ctx.config.mutationDryRunDefault;
+
+    if (!dryRun && ctx.config.applyRequiresPlan) {
+      throw new McpUserError(
+        'APPLY_REQUIRES_PLAN',
+        `Direct apply (dry_run=false) is disabled. Run dry_run:true first to create a plan, then call directus_apply_plan.`,
+        { collection: args.collection, key: args.key },
+      );
+    }
+
     const result = await updateItemWithGuards(ctx.client, ctx.config, schema, args.key, data, {
-      dryRun: args.dry_run,
+      dryRun,
       verify: verify as Record<string, unknown> | undefined,
     });
 
@@ -59,6 +69,31 @@ export const updateItemTool = {
       ok: true,
     });
 
+    // Create plan on dry-run.
+    let planId: string | undefined;
+    let planExpiresAt: string | undefined;
+    if (result.dryRun) {
+      const plan = await ctx.plans.create({
+        operation: 'update_item',
+        collection: args.collection,
+        payload: {
+          type: 'update_item',
+          key: args.key,
+          data,
+          verify: verify as Record<string, unknown> | undefined,
+        },
+        summary: {
+          changedFields: Object.keys(data),
+          affectedKeys: [args.key],
+          itemCount: 1,
+        },
+        ttlSeconds: ctx.config.planTtlSeconds,
+        maxBytes: ctx.config.planMaxBytes,
+      } as never);
+      planId = plan.id;
+      planExpiresAt = plan.expiresAt;
+    }
+
     const text = formatMutationText(
       {
         action: 'update',
@@ -68,6 +103,9 @@ export const updateItemTool = {
         before: result.before,
         after: result.after,
         diff: result.diff,
+        planId,
+        planExpiresAt,
+        changedFields: Object.keys(data),
       },
       ctx.config,
     );
@@ -79,6 +117,7 @@ export const updateItemTool = {
       structuredContent: {
         ok: true,
         ...result,
+        ...(planId ? { planId, planExpiresAt, requiresApplyPlan: true, written: false } : {}),
       },
     };
   },

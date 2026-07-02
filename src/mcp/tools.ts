@@ -11,6 +11,8 @@ import { updateItemsSameDataTool } from '../tools/updateItemsSameData.js';
 import { batchUpdateItemsTool } from '../tools/batchUpdateItems.js';
 import { deleteItemsTool } from '../tools/deleteItems.js';
 import { dryRunMutationTool } from '../tools/dryRunMutation.js';
+import { applyPlanTool } from '../tools/applyPlan.js';
+import { cancelPlanTool } from '../tools/cancelPlan.js';
 import { McpUserError, type ErrorCode } from '../directus/errors.js';
 import { DirectusApiError } from '../directus/rest.js';
 import { normalizeJsonLike } from '../safety/normalize.js';
@@ -40,6 +42,8 @@ const TOOL_DEFS: Array<ToolDef> = [
   batchUpdateItemsTool,
   deleteItemsTool,
   dryRunMutationTool,
+  applyPlanTool,
+  cancelPlanTool,
 ];
 
 /**

@@ -219,6 +219,15 @@ export interface MutationTextSummary {
   aborted?: boolean;
   abortReason?: string;
   ok: boolean;
+  /** When true, this is the result of directus_apply_plan (real write happened). */
+  applied?: boolean;
+  /** Plan ID for dry-run responses (so model can call directus_apply_plan). */
+  planId?: string;
+  /** Plan expiry timestamp. */
+  planExpiresAt?: string;
+  /** Read-back verification result after apply. */
+  readBackOk?: boolean | null;
+  readBackMismatches?: Array<{ field: string; expected: unknown; actual: unknown }>;
   summary?: {
     total?: number;
     ok?: number;
@@ -230,6 +239,7 @@ export interface MutationTextSummary {
   diff?: Record<string, { before: unknown; after: unknown; changed: boolean }>;
   error?: { code: string; message: string; details?: unknown };
   results?: Array<unknown>;
+  changedFields?: string[];
 }
 
 function formatDiff(
@@ -262,15 +272,69 @@ export function formatMutationText(
 ): string {
   const parts: string[] = [];
 
-  // Header line: action / collection / dry-run / outcome
-  const outcome = result.aborted
-    ? 'ABORTED'
-    : result.ok
-      ? 'OK'
-      : 'FAILED';
-  parts.push(
-    `${result.action.toUpperCase()} ${result.collection} — ${outcome} (dryRun=${result.dryRun})`,
-  );
+  // Header line — status prefix + action + collection + outcome.
+  // The prefix is the CRITICAL signal for the model:
+  //   DRY-RUN  = nothing was written
+  //   APPLIED  = real write happened
+  //   APPLIED_WITH_WARNING = real write happened but post-write verification failed
+  //   ABORTED  = nothing was written (preflight failed)
+  //   FAILED   = nothing was written (error)
+  // When a warning is present (applied + readback mismatch), the prefix
+  // becomes "APPLIED" but the outcome shows "WARNING" instead of "OK" —
+  // this is the critical signal that the write happened but something is off.
+  const hasWarning = !!result.error && result.applied;
+  const prefix = result.applied
+    ? 'APPLIED'
+    : result.aborted
+      ? 'ABORTED'
+      : result.dryRun
+        ? 'DRY-RUN'
+        : result.ok
+          ? 'OK'
+          : 'FAILED';
+  const writtenFlag = result.applied
+    ? 'written=true'
+    : result.dryRun
+      ? 'NOT WRITTEN'
+      : result.aborted
+        ? 'NOT WRITTEN'
+        : result.ok
+          ? 'written=true'
+          : 'NOT WRITTEN';
+  const headerBits = [`${prefix} ${result.action.toUpperCase()} ${result.collection}`];
+  if (hasWarning) {
+    headerBits.push('— WARNING');
+  } else if (result.ok || result.applied) {
+    headerBits.push('— OK');
+  } else {
+    headerBits.push('— FAILED');
+  }
+  headerBits.push(`(dryRun=${result.dryRun})`);
+  if (writtenFlag) headerBits.push(writtenFlag);
+  parts.push(headerBits.join(' '));
+
+  // Plan info (dry-run responses)
+  if (result.planId) {
+    parts.push(`Plan ID: ${result.planId}`);
+    if (result.planExpiresAt) {
+      parts.push(`Plan expires at: ${result.planExpiresAt}`);
+    }
+  }
+
+  // Read-back verification (apply responses)
+  if (result.readBackOk !== undefined) {
+    if (result.readBackOk === true) {
+      parts.push('Read-back verification: OK');
+    } else if (result.readBackOk === false) {
+      parts.push('Read-back verification: MISMATCH');
+      if (result.readBackMismatches && result.readBackMismatches.length > 0) {
+        const mmLines = result.readBackMismatches.map((m) => `  ${m.field}: expected=${JSON.stringify(m.expected)} actual=${JSON.stringify(m.actual)}`);
+        parts.push(mmLines.join('\n'));
+      }
+    } else {
+      parts.push('Read-back verification: (not performed for this operation type)');
+    }
+  }
 
   // Batch summary
   if (result.summary) {
@@ -281,6 +345,11 @@ export function formatMutationText(
   }
   if (result.aborted && result.abortReason) {
     parts.push(`Abort reason: ${result.abortReason}`);
+  }
+
+  // Changed fields (compact)
+  if (result.changedFields && result.changedFields.length > 0) {
+    parts.push(`Changed fields: ${result.changedFields.join(', ')}`);
   }
 
   // Error
@@ -324,6 +393,15 @@ export function formatMutationText(
     if (result.results.length > head.length) {
       parts.push(`  …[${result.results.length - head.length} more items truncated]`);
     }
+  }
+
+  // Next-action hint for dry-run (critical for preventing model hallucination).
+  if (result.dryRun && result.planId && result.ok) {
+    parts.push('');
+    parts.push('⚠ DRY-RUN ONLY — hiçbir veri yazılmadı.');
+    parts.push(`Kullanıcı onay verirse şu tool çağrılmalı:`);
+    parts.push(`directus_apply_plan({ "plan_id": "${result.planId}", "confirm": true })`);
+    parts.push(`Başarı mesajı ancak directus_apply_plan sonucunda applied:true / written:true görüldükten sonra verilebilir.`);
   }
 
   return truncateText(parts.join('\n'), limits.readTextMaxChars);

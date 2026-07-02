@@ -102,6 +102,10 @@ export const dryRunMutationTool = {
     });
 
     // Build a combined text view across all collections.
+    // NOTE: directus_dry_run_mutation does NOT create a plan — it is a
+    // planning-only view across multiple operations. To actually apply,
+    // the caller must use the specific mutation tool (directus_update_item
+    // etc.) with dry_run:true to get a planId, then directus_apply_plan.
     const totalOps = results.length;
     const failedOps = results.filter((r) => r.ok === false).length;
     const text = formatMutationText(

@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Plan store (contains sensitive field values being written)
+/tmp/directus-safe-mcp-plans/
+*.plan.json
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+dev.log
+server.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

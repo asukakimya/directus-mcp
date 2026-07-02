@@ -60,6 +60,26 @@ export interface AppConfig {
   readTextMaxRows: number;
   readTextMaxChars: number;
 
+  /**
+   * Dry-run approval plan flow.
+   *
+   * When `applyRequiresPlan=true` (default), direct `dry_run:false` calls
+   * on mutation tools are rejected with `APPLY_REQUIRES_PLAN`. The model
+   * must first call with `dry_run:true` (which creates a plan), then call
+   * `directus_apply_plan` to actually write. This prevents the model from
+   * claiming success without actually writing.
+   */
+  applyRequiresPlan: boolean;
+
+  /** Plan store backend: `file` (default, production) or `memory` (tests). */
+  planStore: 'file' | 'memory';
+  /** Directory for file-based plan store. */
+  planStoreDir: string;
+  /** Plan TTL in seconds (default 900 = 15 min). */
+  planTtlSeconds: number;
+  /** Max plan payload size in bytes (default 1 MB). */
+  planMaxBytes: number;
+
   logLevel: string;
 }
 
@@ -173,6 +193,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     schemaTextMaxFields: parseInteger(env.SCHEMA_TEXT_MAX_FIELDS, 80),
     readTextMaxRows: parseInteger(env.READ_TEXT_MAX_ROWS, 10),
     readTextMaxChars: parseInteger(env.READ_TEXT_MAX_CHARS, 12000),
+    applyRequiresPlan: parseBool(env.APPLY_REQUIRES_PLAN, true),
+    planStore: (env.PLAN_STORE ?? 'file').trim().toLowerCase() === 'memory' ? 'memory' : 'file',
+    planStoreDir: (env.PLAN_STORE_DIR ?? '/tmp/directus-safe-mcp-plans').trim(),
+    planTtlSeconds: parseInteger(env.PLAN_TTL_SECONDS, 900),
+    planMaxBytes: parseInteger(env.PLAN_MAX_BYTES, 1048576),
     logLevel: (env.LOG_LEVEL ?? 'info').trim().toLowerCase(),
   };
 }

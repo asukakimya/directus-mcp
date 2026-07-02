@@ -108,13 +108,18 @@ node dist/index.js
 | `SCHEMA_TEXT_MAX_FIELDS` | `80` | `content.text` için şema detayında maksimum field sayısı |
 | `READ_TEXT_MAX_ROWS` | `10` | `content.text` için read/batch sonuçlarında maksimum satır |
 | `READ_TEXT_MAX_CHARS` | `12000` | `content.text` toplam karakter limiti (truncation marker dahil) |
+| `APPLY_REQUIRES_PLAN` | `true` | Direct `dry_run:false` reddedilir; model önce dry-run yapıp plan almalı, sonra `directus_apply_plan` çağırmalı |
+| `PLAN_STORE` | `file` | Plan store backend: `file` (production) veya `memory` (test) |
+| `PLAN_STORE_DIR` | `/tmp/directus-safe-mcp-plans` | File-based plan store dizini (0600 izinleri) |
+| `PLAN_TTL_SECONDS` | `900` | Plan TTL (saniye, default 15 dk) |
+| `PLAN_MAX_BYTES` | `1048576` | Maks plan payload boyutu (byte) |
 | `LOG_LEVEL` | `info` | pino log level |
 
 ---
 
 ## MCP Tool Listesi
 
-11 tool register edilir (hepsi `directus_` prefix'i ile):
+13 tool register edilir (hepsi `directus_` prefix'i ile):
 
 | Tool | Açıklama |
 |---|---|
@@ -122,13 +127,15 @@ node dist/index.js
 | `directus_schema_detail` | Bir veya birden fazla koleksiyonun tam şema detayı |
 | `directus_read_items` | Liste okuma (validate edilmiş query ile) |
 | `directus_read_item` | Tek item okuma |
-| `directus_create_item` | Tek item create (dedupe + dry-run destekli) |
-| `directus_create_items` | Batch create (serial, per-item result) |
+| `directus_create_item` | Tek item create (dedupe + dry-run + plan destekli) |
+| `directus_create_items` | Batch create (serial, per-item result, all-or-nothing preflight) |
 | `directus_update_item` | Tek item update (read-before → verify → diff → write → after-read) |
 | `directus_update_items_same_data` | Bulk PATCH /items/{collection} (aynı data, multi key) |
 | `directus_batch_update_items` | Per-item different data update (serial PATCH) |
 | `directus_delete_items` | Delete (default kapalı, confirm gerekli) |
 | `directus_dry_run_mutation` | Çoklu operasyon planı (dry-run only) |
+| `directus_apply_plan` | Önceki dry-run plan'ını uygular (gerçek yazma + read-back verification) |
+| `directus_cancel_plan` | Pending plan'ı iptal eder (uygulanamaz hale getirir) |
 
 ### Tool input kuralları
 
@@ -154,7 +161,150 @@ node dist/index.js
 }
 ```
 
-Hata kodları: `CONFIG_ERROR`, `DIRECTUS_API_ERROR`, `COLLECTION_NOT_ALLOWED`, `SYSTEM_COLLECTION_DENIED`, `SCHEMA_NOT_FOUND`, `PRIMARY_KEY_NOT_FOUND`, `UNKNOWN_FIELD`, `READONLY_FIELD`, `PRIMARY_KEY_UPDATE_DENIED`, `REQUIRED_FIELD_MISSING`, `INVALID_QUERY`, `INVALID_FILTER_OPERATOR`, `VERIFY_FAILED`, `VERIFY_REQUIRED`, `ABORTED_BY_PREFLIGHT`, `DUPLICATE_FOUND`, `BATCH_LIMIT_EXCEEDED`, `DELETE_DISABLED`, `CONFIRMATION_REQUIRED`, `INVALID_JSON`, `INVALID_DATA_TYPE`, `DRY_RUN_REQUIRED`, `NOT_FOUND`.
+Hata kodları: `CONFIG_ERROR`, `DIRECTUS_API_ERROR`, `COLLECTION_NOT_ALLOWED`, `SYSTEM_COLLECTION_DENIED`, `SCHEMA_NOT_FOUND`, `PRIMARY_KEY_NOT_FOUND`, `UNKNOWN_FIELD`, `READONLY_FIELD`, `PRIMARY_KEY_UPDATE_DENIED`, `REQUIRED_FIELD_MISSING`, `INVALID_QUERY`, `INVALID_FILTER_OPERATOR`, `VERIFY_FAILED`, `VERIFY_REQUIRED`, `ABORTED_BY_PREFLIGHT`, `DUPLICATE_FOUND`, `BATCH_LIMIT_EXCEEDED`, `DELETE_DISABLED`, `CONFIRMATION_REQUIRED`, `INVALID_JSON`, `INVALID_DATA_TYPE`, `DRY_RUN_REQUIRED`, `NOT_FOUND`, `PLAN_NOT_FOUND`, `PLAN_EXPIRED`, `PLAN_ALREADY_APPLIED`, `PLAN_ALREADY_IN_PROGRESS`, `PLAN_CANCELLED`, `PLAN_CHECKSUM_MISMATCH`, `APPLY_REQUIRES_PLAN`, `PLAN_STORE_ERROR`, `PLAN_TOO_LARGE`, `READBACK_MISMATCH`, `CONFIRM_TRUE_REQUIRED`.
+
+---
+
+## Dry-run → Approval → Apply Plan Flow
+
+Bu akış, modelin "uyguladım" deyip gerçekte yazmaması problemini kökten çözer.
+
+### Akış
+
+1. **Mutation tool** `dry_run:true` ile çağrılır (örn. `directus_update_item`).
+2. Server dry-run çalıştırır: read-before → verify → validate → diff. **Hiçbir yazma yapmaz.**
+3. Server bir `planId` oluşturur ve store eder (file-based, TTL 15 dk).
+4. Response'da `planId`, `requiresApplyPlan: true`, `written: false` döner.
+5. `content.text`'te açıkça "DRY-RUN ONLY — hiçbir veri yazılmadı" yazar ve `directus_apply_plan` çağrı önerisi verilir.
+6. Kullanıcı onay verince model **aynı payload'u tekrar üretmez** — sadece `directus_apply_plan({ plan_id, confirm: true })` çağırır.
+7. `directus_apply_plan` planı yükler, checksum doğrular, collection guard + schema + field validation + verify **tekrar** yapar, gerçek yazma yapar, read-back verification yapar, plan'ı `applied` olarak işaretler.
+8. Response'da `applied: true`, `written: true`, `dryRun: false`, `readBackOk: true` döner.
+9. `content.text`'te "APPLIED — gerçek yazma yapıldı" yazar.
+
+### Kritik kurallar
+
+- `dry_run:true` **asla** veri yazmaz. Kullanıcı onayı sadece apply iznidir; gerçek yazma `directus_apply_plan` çağrısıyla olur.
+- `APPLY_REQUIRES_PLAN=true` (default) iken direct `dry_run:false` mutation tool çağrısı `APPLY_REQUIRES_PLAN` hatası alır.
+- Her plan sadece bir kez uygulanabilir (idempotency). İkinci apply → `PLAN_ALREADY_APPLIED`.
+- **Concurrent apply protection**: plan claim atomik `pending → applying` geçişi yapar. Eşzamanlı iki apply çağrısından ilki claim alır, ikincisi `PLAN_ALREADY_IN_PROGRESS` alır.
+- Süresi dolmuş plan → `PLAN_EXPIRED`. Yeni dry-run gerekir.
+- Apply sırasında verify koşulları artık geçerli değilse → `VERIFY_FAILED`, yazma yapılmaz (pre-write error, plan cancelled).
+- **Read-back mismatch post-write davranışı**: yazma başarılı olursa, plan **mutlaka terminal** duruma geçer. Read-back mismatch olursa `applied_with_warning` statüsü alır ve `warning.code: "READBACK_MISMATCH"` response'da döner — **throw etmez**. Plan tekrar apply edilemez. Bu, "yazıldı ama error döndü, tekrar yazıldı" riskini önler.
+- Post-write unexpected error → `failed_after_write` (terminal, tekrar apply edilemez, caller read ile durumu kontrol etmeli).
+- Plan store file-based (default), 0600 dosya izinleri, TTL 15 dk, max 1 MB payload.
+- Startup + periyodik (5 dk) cleanup: expired/cancelled/applied plan dosyaları temizlenir. `applied_with_warning` ve `failed_after_write` planları korunur (post-mortem inspection için).
+- Audit log plan payload'unu loglamaz — sadece `planId`, `operation`, `collection`, `changedFields`.
+
+### `directus_dry_run_mutation` plan üretmez
+
+`directus_dry_run_mutation` tool'u **çoklu işlem planlama/görünüm** içindir. Apply edilebilir `planId` **üretmez**.
+
+Apply edilebilir plan gerekiyorsa spesifik mutation tool `dry_run:true` kullanın:
+- Tek kayıt update: `directus_update_item dry_run:true`
+- Çoklu farklı update: `directus_batch_update_items dry_run:true`
+- Tek/çoklu create: `directus_create_item(s) dry_run:true`
+- Delete: `directus_delete_items dry_run:true`
+
+Onay sonrası sadece `directus_apply_plan` çağırın.
+
+### Plan lifecycle durumları
+
+```text
+pending → applying → applied                          (write + readback OK)
+                   → applied_with_warning             (write OK, readback mismatch)
+                   → failed_after_write               (write happened, post-write error)
+pending → cancelled                                   (user rejected or pre-write validation fail)
+pending/applying → expired                            (TTL passed)
+```
+
+`applied`, `applied_with_warning`, `failed_after_write`, `expired`, `cancelled` hepsi terminal — plan bir daha apply edilemez.
+
+### Örnek akış
+
+```json
+// 1. Model: dry-run update
+{ "tool": "directus_update_item", "input": {
+    "collection": "articles", "key": 1,
+    "verify": { "title": "Intro to MCP" },
+    "data": { "slug": "intro-to-mcp" },
+    "dry_run": true
+}}
+// Response: { "planId": "plan_...", "requiresApplyPlan": true, "written": false, ... }
+
+// 2. Kullanıcı: "onaylıyorum"
+
+// 3. Model: apply plan (payload'u tekrar üretmez!)
+{ "tool": "directus_apply_plan", "input": {
+    "plan_id": "plan_...",
+    "confirm": true
+}}
+// Response: { "applied": true, "written": true, "dryRun": false, "readBackOk": true, ... }
+```
+
+### Content text örnekleri
+
+Dry-run:
+```text
+DRY-RUN UPDATE articles — OK (dryRun=true) NOT WRITTEN
+Plan ID: plan_...
+Plan expires at: 2024-01-01T00:15:00.000Z
+Changed fields: slug
+Before: {"id":1,"title":"Intro to MCP","slug":null}
+After: {"id":1,"title":"Intro to MCP","slug":"intro-to-mcp"}
+
+⚠ DRY-RUN ONLY — hiçbir veri yazılmadı.
+Kullanıcı onay verirse şu tool çağrılmalı:
+directus_apply_plan({ "plan_id": "plan_...", "confirm": true })
+Başarı mesajı ancak directus_apply_plan sonucunda applied:true / written:true görüldükten sonra verilebilir.
+```
+
+Apply:
+```text
+APPLIED UPDATE articles — OK (dryRun=false) written=true
+Plan ID: plan_...
+Read-back verification: OK
+Changed fields: slug
+```
+
+### Delete işlemleri
+
+Delete işlemleri de aynı plan akışını kullanır:
+1. `directus_delete_items` ile `dry_run:true` → plan oluşturulur (confirm token dahil).
+2. `directus_apply_plan` → gerçek delete + read-back (kayıtların artık okunamadığını doğrular).
+
+### Local debug (plan akışı olmadan)
+
+`APPLY_REQUIRES_PLAN=false` ile direct `dry_run:false` çağrılabilir (eski davranış). Sadece local debug için önerilir.
+
+---
+
+## LibreChat Agent Instructions
+
+Bağlanan ajana şu talimatı verin:
+
+```text
+Directus mutation işlemlerinde (create/update/delete) her zaman önce dry_run:true kullan.
+
+Dry-run sonucu planId dönerse, kullanıcı onayı sonrası AYNI PAYLOAD'U TEKRAR ÜRETTME.
+Sadece şu çağrıyı yap:
+  directus_apply_plan({ "plan_id": "<önceki planId>", "confirm": true })
+
+Kullanıcı "onaylıyorum", "uygula", "tamam", "devam et" derse directus_apply_plan çağır.
+
+directus_apply_plan çalışmadan ve çıktıda applied:true / dryRun:false / written:true görmeden
+"başarıyla güncellendi", "uygulandı", "kaydedildi" DEME.
+
+Dry-run çıktısı başarı değildir. Dry-run sadece plan üretir.
+Eğer planId yoksa veya apply başarısız olursa, kullanıcıya gerçeği söyle.
+
+directus_dry_run_mutation tool'u planId ÜRETMEZ — sadece çoklu işlem görünümü içindir.
+Apply edilebilir plan için spesifik mutation tool dry_run:true kullan (update_item, batch_update_items, create_item, delete_items).
+
+Eğer directus_apply_plan çıktısında warning alanı varsa (örn. READBACK_MISMATCH),
+yazma gerçekleşmiş ama doğrulama başarısız olmuş demektir. Kullanıcıya gerçeği söyle:
+"Yazma yapıldı ama read-back doğrulaması başarısız. Kaydı kontrol edin."
+Plan zaten terminal durumdadır, tekrar apply ETME.
+```
 
 ---
 
@@ -373,6 +523,7 @@ directus-safe-mcp/
       verify.ts                  # verify record vs expectations
       audit.ts                   # in-memory audit log
       textFormat.ts              # compact content.text formatters (token-bounded)
+      plans.ts                   # MutationPlan + PlanStore (file/memory) + checksum
     tools/
       schemaOverview.ts
       schemaDetail.ts
@@ -428,6 +579,18 @@ Tüm kabul kriterleri (spec §25) karşılanır:
 24. ✅ `batch_update_items` ve `create_items` apply sırasında all-or-nothing preflight (`allow_partial_apply` default false). Abort durumunda sıfır yazma yapılır.
 25. ✅ `read_item` single-mode: `limit`/`page`/`offset` reddedilir, default limit enjekte edilmez.
 26. ✅ `content.text` token-bounded: gerçek sonuç (şema, kayıtlar, diff, hata, summary) kompakt formatta, `SCHEMA_TEXT_MAX_FIELDS` / `READ_TEXT_MAX_ROWS` / `READ_TEXT_MAX_CHARS` limitleriyle.
+27. ✅ `directus_apply_plan` tool: dry-run plan'ını uygular, read-back verification yapar, idempotent (plan sadece bir kez apply edilir).
+28. ✅ `directus_cancel_plan` tool: pending plan'ı iptal eder.
+29. ✅ Dry-run mutation response'ları `planId` döndürür; `content.text` "DRY-RUN ONLY — hiçbir veri yazılmadı" içerir.
+30. ✅ `APPLY_REQUIRES_PLAN=true` (default): direct `dry_run:false` reddedilir, model önce plan almalı.
+31. ✅ Plan store: file-based (default) / memory, 0600 izinleri, TTL, max bytes, checksum.
+32. ✅ Delete işlemleri de plan akışını kullanır (confirm token plan içinde saklanır).
+33. ✅ Read-back mismatch post-write: warning olarak döner (throw etmez), plan `applied_with_warning` terminal durumu alır, tekrar apply edilemez.
+34. ✅ Concurrent apply protection: atomik `pending → applying` claim, ikinci eşzamanlı apply `PLAN_ALREADY_IN_PROGRESS` alır.
+35. ✅ Post-write unexpected error: plan `failed_after_write` terminal durumu alır, tekrar apply edilemez.
+36. ✅ `directus_dry_run_mutation` planId üretmez — README ve agent instruction'da belgelendi.
+37. ✅ Create işlemleri için gerçek read-back: created id bulunur, kayıt tekrar okunur, field değerleri doğrulanır.
+38. ✅ Startup + periyodik (5 dk) plan cleanup: expired/cancelled/applied plan dosyaları temizlenir.
 
 ---
 

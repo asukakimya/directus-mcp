@@ -19,7 +19,7 @@ const Input = z.object({
 export const deleteItemsTool = {
   name: 'directus_delete_items',
   description:
-    'Delete one or more items by primary key. DISABLED by default — requires DIRECTUS_ALLOW_DELETE=true. Requires confirm="DELETE <collection>:<keys>". Reads each record first, runs optional verify, then deletes. Supports dry_run.',
+    'Delete one or more items by primary key. DISABLED by default — requires DIRECTUS_ALLOW_DELETE=true. Requires confirm="DELETE <collection>:<keys>". Reads each record first, runs optional verify, then deletes. When APPLY_REQUIRES_PLAN=true (default), dry_run=false is rejected — use dry_run=true then directus_apply_plan.',
   inputSchema: Input,
   handler: async (ctx: ToolContext, rawArgs: unknown) => {
     const args = Input.parse(rawArgs);
@@ -64,8 +64,18 @@ export const deleteItemsTool = {
 
     const schema = await ctx.schema.loadCollectionSchema(args.collection);
 
+    const dryRun = args.dry_run ?? ctx.config.mutationDryRunDefault;
+
+    if (!dryRun && ctx.config.applyRequiresPlan) {
+      throw new McpUserError(
+        'APPLY_REQUIRES_PLAN',
+        `Direct apply (dry_run=false) is disabled. Run dry_run:true first to create a plan, then call directus_apply_plan.`,
+        { collection: args.collection },
+      );
+    }
+
     const result = await deleteItemsWithGuards(ctx.client, ctx.config, schema, keys, {
-      dryRun: args.dry_run,
+      dryRun,
       verify,
       confirm: args.confirm,
     });
@@ -79,6 +89,30 @@ export const deleteItemsTool = {
       ok: true,
     });
 
+    // Create plan on dry-run.
+    let planId: string | undefined;
+    let planExpiresAt: string | undefined;
+    if (result.dryRun) {
+      const plan = await ctx.plans.create({
+        operation: 'delete_items',
+        collection: args.collection,
+        payload: {
+          type: 'delete_items',
+          keys,
+          verify,
+          confirm: args.confirm,
+        },
+        summary: {
+          affectedKeys: keys,
+          itemCount: keys.length,
+        },
+        ttlSeconds: ctx.config.planTtlSeconds,
+        maxBytes: ctx.config.planMaxBytes,
+      } as never);
+      planId = plan.id;
+      planExpiresAt = plan.expiresAt;
+    }
+
     const text = formatMutationText(
       {
         action: 'delete',
@@ -91,6 +125,9 @@ export const deleteItemsTool = {
           failed: 0,
           dryRun: result.dryRun,
         },
+        before: result.before,
+        planId,
+        planExpiresAt,
       },
       ctx.config,
     );
@@ -102,6 +139,7 @@ export const deleteItemsTool = {
       structuredContent: {
         ok: true,
         ...result,
+        ...(planId ? { planId, planExpiresAt, requiresApplyPlan: true, written: false } : {}),
       },
     };
   },

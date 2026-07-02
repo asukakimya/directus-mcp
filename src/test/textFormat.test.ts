@@ -199,7 +199,7 @@ describe('formatMutationText', () => {
       },
       limits,
     );
-    expect(text).toContain('UPDATE articles — OK (dryRun=true)');
+    expect(text).toContain('DRY-RUN UPDATE articles — OK (dryRun=true)');
     expect(text).toContain('Before: {"id":1,"title":"Old"}');
     expect(text).toContain('After: {"id":1,"title":"New"}');
     expect(text).toContain('Diff (changed):');
@@ -219,7 +219,7 @@ describe('formatMutationText', () => {
       },
       limits,
     );
-    expect(text).toContain('UPDATE articles — ABORTED');
+    expect(text).toContain('ABORTED UPDATE articles');
     expect(text).toContain('aborted=true');
     expect(text).toContain('Abort reason:');
     expect(text).toContain('VERIFY_FAILED');
@@ -293,7 +293,7 @@ describe('formatMutationText', () => {
       },
       limits,
     );
-    expect(text).toContain('DELETE articles — OK (dryRun=false)');
+    expect(text).toContain('DELETE articles — OK (dryRun=false) written=true');
     expect(text).toContain('Summary: total=2 ok=2 failed=0');
   });
 });

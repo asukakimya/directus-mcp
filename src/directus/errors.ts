@@ -29,7 +29,18 @@ export type ErrorCode =
   | 'DRY_RUN_REQUIRED'
   | 'VERIFY_REQUIRED'
   | 'ABORTED_BY_PREFLIGHT'
-  | 'NOT_FOUND';
+  | 'NOT_FOUND'
+  | 'PLAN_NOT_FOUND'
+  | 'PLAN_EXPIRED'
+  | 'PLAN_ALREADY_APPLIED'
+  | 'PLAN_ALREADY_IN_PROGRESS'
+  | 'PLAN_CANCELLED'
+  | 'PLAN_CHECKSUM_MISMATCH'
+  | 'APPLY_REQUIRES_PLAN'
+  | 'PLAN_STORE_ERROR'
+  | 'PLAN_TOO_LARGE'
+  | 'READBACK_MISMATCH'
+  | 'CONFIRM_TRUE_REQUIRED';
 
 export interface ErrorDetails {
   [key: string]: unknown;

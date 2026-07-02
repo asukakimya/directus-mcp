@@ -40,6 +40,17 @@ services:
       READ_TEXT_MAX_ROWS: ${READ_TEXT_MAX_ROWS:-10}
       READ_TEXT_MAX_CHARS: ${READ_TEXT_MAX_CHARS:-12000}
 
+      APPLY_REQUIRES_PLAN: ${APPLY_REQUIRES_PLAN:-true}
+      PLAN_STORE: ${PLAN_STORE:-file}
+      PLAN_STORE_DIR: ${PLAN_STORE_DIR:-/tmp/directus-safe-mcp-plans}
+      PLAN_TTL_SECONDS: ${PLAN_TTL_SECONDS:-900}
+      PLAN_MAX_BYTES: ${PLAN_MAX_BYTES:-1048576}
+
       LOG_LEVEL: ${LOG_LEVEL:-info}
     ports:
       - "3333:3333"
+    volumes:
+      - directus-safe-mcp-plans:/tmp/directus-safe-mcp-plans
+
+volumes:
+  directus-safe-mcp-plans:

@@ -33,6 +33,11 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     schemaTextMaxFields: 80,
     readTextMaxRows: 10,
     readTextMaxChars: 12000,
+    applyRequiresPlan: false,
+    planStore: 'memory' as const,
+    planStoreDir: '/tmp/test-plans',
+    planTtlSeconds: 900,
+    planMaxBytes: 1048576,
     logLevel: 'info',
     ...overrides,
   };

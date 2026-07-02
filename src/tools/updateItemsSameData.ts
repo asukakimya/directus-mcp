@@ -18,7 +18,7 @@ const Input = z.object({
 export const updateItemsSameDataTool = {
   name: 'directus_update_items_same_data',
   description:
-    'Apply the SAME partial data to multiple keys using Directus bulk PATCH /items/{collection} endpoint. Use this when every key should receive identical changes. For per-key different data, use directus_batch_update_items instead.',
+    'Apply the SAME partial data to multiple keys using Directus bulk PATCH /items/{collection} endpoint. Use this when every key should receive identical changes. For per-key different data, use directus_batch_update_items instead. When APPLY_REQUIRES_PLAN=true (default), dry_run=false is rejected — use dry_run=true then directus_apply_plan.',
   inputSchema: Input,
   handler: async (ctx: ToolContext, rawArgs: unknown) => {
     const args = Input.parse(rawArgs);
@@ -45,8 +45,18 @@ export const updateItemsSameDataTool = {
     assertCollectionMutable(ctx.config, args.collection);
     const schema = await ctx.schema.loadCollectionSchema(args.collection);
 
+    const dryRun = args.dry_run ?? ctx.config.mutationDryRunDefault;
+
+    if (!dryRun && ctx.config.applyRequiresPlan) {
+      throw new McpUserError(
+        'APPLY_REQUIRES_PLAN',
+        `Direct apply (dry_run=false) is disabled. Run dry_run:true first to create a plan, then call directus_apply_plan.`,
+        { collection: args.collection },
+      );
+    }
+
     const result = await updateItemsSameDataWithGuards(ctx.client, ctx.config, schema, keys, data, {
-      dryRun: args.dry_run,
+      dryRun,
     });
 
     ctx.audit.record({
@@ -58,11 +68,34 @@ export const updateItemsSameDataTool = {
       ok: true,
     });
 
-    // Convert per-key diff map into a per-item results list for text formatter.
     const perItemResults: Array<unknown> = Object.entries(result.diff).map(([k, d]) => ({
       key: k,
       diff: d,
     }));
+
+    // Create plan on dry-run.
+    let planId: string | undefined;
+    let planExpiresAt: string | undefined;
+    if (result.dryRun) {
+      const plan = await ctx.plans.create({
+        operation: 'update_items_same_data',
+        collection: args.collection,
+        payload: {
+          type: 'update_items_same_data',
+          keys,
+          data,
+        },
+        summary: {
+          changedFields: Object.keys(data),
+          affectedKeys: keys,
+          itemCount: keys.length,
+        },
+        ttlSeconds: ctx.config.planTtlSeconds,
+        maxBytes: ctx.config.planMaxBytes,
+      } as never);
+      planId = plan.id;
+      planExpiresAt = plan.expiresAt;
+    }
 
     const text = formatMutationText(
       {
@@ -77,6 +110,9 @@ export const updateItemsSameDataTool = {
           dryRun: result.dryRun,
         },
         results: perItemResults,
+        planId,
+        planExpiresAt,
+        changedFields: Object.keys(data),
       },
       ctx.config,
     );
@@ -89,6 +125,7 @@ export const updateItemsSameDataTool = {
         ok: true,
         collection: args.collection,
         ...result,
+        ...(planId ? { planId, planExpiresAt, requiresApplyPlan: true, written: false } : {}),
       },
     };
   },

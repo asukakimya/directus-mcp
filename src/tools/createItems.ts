@@ -23,7 +23,7 @@ const Input = z.object({
 export const createItemsTool = {
   name: 'directus_create_items',
   description:
-    'Create multiple items serially. Each item has its own data + optional dedupe. Batch size limited by MUTATION_MAX_BATCH_SIZE. By default (allow_partial_apply=false), apply runs all-or-nothing preflight: if any item fails validation/dedupe, the entire batch is aborted with zero creates. Set allow_partial_apply=true for partial-success behaviour. Set dry_run=false to actually write.',
+    'Create multiple items serially. Each item has its own data + optional dedupe. Batch size limited by MUTATION_MAX_BATCH_SIZE. By default (allow_partial_apply=false), apply runs all-or-nothing preflight: if any item fails validation/dedupe, the entire batch is aborted with zero creates. When APPLY_REQUIRES_PLAN=true (default), dry_run=false is rejected — use dry_run=true then directus_apply_plan.',
   inputSchema: Input,
   handler: async (ctx: ToolContext, rawArgs: unknown) => {
     const args = Input.parse(rawArgs);
@@ -55,8 +55,18 @@ export const createItemsTool = {
     assertCollectionMutable(ctx.config, args.collection);
     const schema = await ctx.schema.loadCollectionSchema(args.collection);
 
+    const dryRun = args.dry_run ?? ctx.config.mutationDryRunDefault;
+
+    if (!dryRun && ctx.config.applyRequiresPlan) {
+      throw new McpUserError(
+        'APPLY_REQUIRES_PLAN',
+        `Direct apply (dry_run=false) is disabled. Run dry_run:true first to create a plan, then call directus_apply_plan.`,
+        { collection: args.collection },
+      );
+    }
+
     const result = await createItemsWithGuards(ctx.client, ctx.config, schema, items, {
-      dryRun: args.dry_run,
+      dryRun,
       allowPartialApply: args.allow_partial_apply,
     });
 
@@ -72,6 +82,29 @@ export const createItemsTool = {
         : `${result.summary.ok}/${result.summary.total} ok`,
     });
 
+    // Create plan on successful dry-run.
+    let planId: string | undefined;
+    let planExpiresAt: string | undefined;
+    if (result.summary.dryRun && !result.summary.aborted && result.summary.failed === 0) {
+      const plan = await ctx.plans.create({
+        operation: 'create_items',
+        collection: args.collection,
+        payload: {
+          type: 'create_items',
+          items,
+          allowPartialApply: args.allow_partial_apply ?? false,
+        },
+        summary: {
+          itemCount: items.length,
+          affectedKeys: [],
+        },
+        ttlSeconds: ctx.config.planTtlSeconds,
+        maxBytes: ctx.config.planMaxBytes,
+      } as never);
+      planId = plan.id;
+      planExpiresAt = plan.expiresAt;
+    }
+
     const text = formatMutationText(
       {
         action: 'create',
@@ -82,6 +115,8 @@ export const createItemsTool = {
         ok: result.summary.failed === 0 && !result.summary.aborted,
         summary: result.summary,
         results: result.results as unknown[],
+        planId,
+        planExpiresAt,
       },
       ctx.config,
     );
@@ -94,6 +129,7 @@ export const createItemsTool = {
         ok: result.summary.failed === 0 && !result.summary.aborted,
         collection: args.collection,
         ...result,
+        ...(planId ? { planId, planExpiresAt, requiresApplyPlan: true, written: false } : {}),
       },
     };
   },

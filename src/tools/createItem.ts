@@ -18,7 +18,7 @@ const Input = z.object({
 export const createItemTool = {
   name: 'directus_create_item',
   description:
-    'Create a single item. Validates fields against schema, runs dedupe check if provided, and supports dry_run. By default dry_run=true (set dry_run=false to actually write). data may be sent as object or as JSON string in data_json.',
+    'Create a single item. Validates fields against schema, runs dedupe check if provided, and supports dry_run. By default dry_run=true (set dry_run=false to actually write). When APPLY_REQUIRES_PLAN=true (default), dry_run=false is rejected — use dry_run=true then directus_apply_plan. data may be sent as object or as JSON string in data_json.',
   inputSchema: Input,
   handler: async (ctx: ToolContext, rawArgs: unknown) => {
     const args = Input.parse(rawArgs);
@@ -38,8 +38,19 @@ export const createItemTool = {
     assertCollectionMutable(ctx.config, args.collection);
     const schema = await ctx.schema.loadCollectionSchema(args.collection);
 
+    const dryRun = args.dry_run ?? ctx.config.mutationDryRunDefault;
+
+    // APPLY_REQUIRES_PLAN enforcement: block direct apply.
+    if (!dryRun && ctx.config.applyRequiresPlan) {
+      throw new McpUserError(
+        'APPLY_REQUIRES_PLAN',
+        `Direct apply (dry_run=false) is disabled. Run dry_run:true first to create a plan, then call directus_apply_plan.`,
+        { collection: args.collection },
+      );
+    }
+
     const result = await createItemWithGuards(ctx.client, ctx.config, schema, data, {
-      dryRun: args.dry_run,
+      dryRun,
       dedupe: dedupe as Record<string, unknown> | undefined,
     });
 
@@ -52,6 +63,29 @@ export const createItemTool = {
       ok: true,
     });
 
+    // Create plan on dry-run so the model can apply via directus_apply_plan.
+    let planId: string | undefined;
+    let planExpiresAt: string | undefined;
+    if (result.dryRun) {
+      const plan = await ctx.plans.create({
+        operation: 'create_item',
+        collection: args.collection,
+        payload: {
+          type: 'create_item',
+          data,
+          dedupe: dedupe as Record<string, unknown> | undefined,
+        },
+        summary: {
+          changedFields: Object.keys(data),
+          itemCount: 1,
+        },
+        ttlSeconds: ctx.config.planTtlSeconds,
+        maxBytes: ctx.config.planMaxBytes,
+      } as never);
+      planId = plan.id;
+      planExpiresAt = plan.expiresAt;
+    }
+
     const text = formatMutationText(
       {
         action: 'create',
@@ -59,6 +93,9 @@ export const createItemTool = {
         dryRun: result.dryRun,
         ok: true,
         after: result.created,
+        planId,
+        planExpiresAt,
+        changedFields: Object.keys(data),
       },
       ctx.config,
     );
@@ -70,6 +107,7 @@ export const createItemTool = {
       structuredContent: {
         ok: true,
         ...result,
+        ...(planId ? { planId, planExpiresAt, requiresApplyPlan: true, written: false } : {}),
       },
     };
   },

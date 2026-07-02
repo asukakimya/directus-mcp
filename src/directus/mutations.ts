@@ -659,3 +659,67 @@ function errorToJson(err: unknown): { code: string; message: string; details: un
   }
   return { code: 'DIRECTUS_API_ERROR', message: String(err), details: {} };
 }
+
+/* ----------------------------------------------------------------
+ * Read-back verification helpers (used by directus_apply_plan)
+ * ---------------------------------------------------------------- */
+
+/**
+ * After an update, re-read the record and verify that each changed
+ * field now contains the value we intended to write.
+ * Returns `true` if all changed fields match, `false` on mismatch.
+ */
+export async function readBackVerify(
+  client: DirectusRestClient,
+  schema: CollectionSchema,
+  key: string | number,
+  intendedData: Record<string, unknown>,
+): Promise<{ ok: boolean; mismatches: Array<{ field: string; expected: unknown; actual: unknown }> }> {
+  const raw = await restReadItem(client, schema.collection, key, { fields: ['*'] });
+  const record = extractItem(raw);
+  if (!record) {
+    return { ok: false, mismatches: [{ field: '__record__', expected: 'exists', actual: 'null' }] };
+  }
+  const mismatches: Array<{ field: string; expected: unknown; actual: unknown }> = [];
+  for (const [field, expected] of Object.entries(intendedData)) {
+    const actual = record[field];
+    if (!deepEqualSimple(expected, actual)) {
+      mismatches.push({ field, expected, actual });
+    }
+  }
+  return { ok: mismatches.length === 0, mismatches };
+}
+
+/**
+ * After a delete, try to read — expect not found.
+ */
+export async function readBackDelete(
+  client: DirectusRestClient,
+  collection: string,
+  key: string | number,
+): Promise<boolean> {
+  try {
+    const raw = await restReadItem(client, collection, key, { fields: ['*'] });
+    const record = extractItem(raw);
+    // If we got data back, delete failed.
+    return record === null;
+  } catch {
+    // 404 or error = record is gone = delete succeeded
+    return true;
+  }
+}
+
+function deepEqualSimple(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null) return false;
+  if (typeof a !== typeof b) return false;
+  if (Array.isArray(a) && Array.isArray(b)) {
+    return a.length === b.length && a.every((v, i) => deepEqualSimple(v, b[i]));
+  }
+  if (typeof a === 'object' && typeof b === 'object') {
+    const aKeys = Object.keys(a as Record<string, unknown>).sort();
+    const bKeys = Object.keys(b as Record<string, unknown>).sort();
+    return aKeys.length === bKeys.length && aKeys.every((k, i) => k === bKeys[i] && deepEqualSimple((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+  }
+  return false;
+}

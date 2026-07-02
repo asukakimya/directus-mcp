@@ -15,6 +15,8 @@ export interface ToolContext {
   schema: import('../directus/schemaService.js').SchemaService;
   /** Mutation audit log. */
   audit: import('../safety/audit.js').AuditLog;
+  /** Plan store for dry-run → apply flow. */
+  plans: import('../safety/plans.js').PlanStore;
 }
 
 /**

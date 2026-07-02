@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { DirectusRestClient } from '../../src/directus/rest.js';
 import { SchemaService } from '../../src/directus/schemaService.js';
 import { createAuditLog } from '../../src/safety/audit.js';
+import { MemoryPlanStore } from '../../src/safety/plans.js';
 import { schemaOverviewTool } from '../../src/tools/schemaOverview.js';
 import { schemaDetailTool } from '../../src/tools/schemaDetail.js';
 import { createItemTool } from '../../src/tools/createItem.js';
@@ -12,6 +13,8 @@ import { updateItemsSameDataTool } from '../../src/tools/updateItemsSameData.js'
 import { batchUpdateItemsTool } from '../../src/tools/batchUpdateItems.js';
 import { deleteItemsTool } from '../../src/tools/deleteItems.js';
 import { dryRunMutationTool } from '../../src/tools/dryRunMutation.js';
+import { applyPlanTool } from '../../src/tools/applyPlan.js';
+import { cancelPlanTool } from '../../src/tools/cancelPlan.js';
 import type { ToolContext } from '../../src/mcp/server.js';
 import type { AppConfig } from '../../src/config.js';
 import { pino } from 'pino';
@@ -40,6 +43,11 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     schemaTextMaxFields: 80,
     readTextMaxRows: 10,
     readTextMaxChars: 12000,
+    applyRequiresPlan: false,
+    planStore: 'memory' as const,
+    planStoreDir: '/tmp/test-plans',
+    planTtlSeconds: 900,
+    planMaxBytes: 1048576,
     logLevel: 'info',
     ...overrides,
   };
@@ -92,7 +100,8 @@ function buildContext(overrides: Partial<ToolContext> = {}): ToolContext {
   const client = new DirectusRestClient(config.directusUrl, config.directusToken);
   const schema = new SchemaService(client, 60000);
   const audit = createAuditLog(logger, config);
-  return { config, logger, client, schema, audit, ...overrides };
+  const plans = new MemoryPlanStore();
+  return { config, logger, client, schema, audit, plans, ...overrides };
 }
 
 function mockFetch(responseByPath: Record<string, { status?: number; body: unknown }>): typeof fetch {
@@ -917,7 +926,7 @@ describe('content.text contains real result data (not just label)', () => {
       dry_run: true,
     });
     const text = result.content[0]!.text;
-    expect(text).toContain('UPDATE articles — OK (dryRun=true)');
+    expect(text).toContain('DRY-RUN UPDATE articles — OK (dryRun=true)');
     expect(text).toContain('Before:');
     expect(text).toContain('After:');
     expect(text).toContain('Diff (changed):');
