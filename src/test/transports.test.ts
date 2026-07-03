@@ -179,33 +179,6 @@ describe('config mutationRequireVerify', () => {
   });
 });
 
-describe('config operation-specific plan policy', () => {
-  it('falls back to APPLY_REQUIRES_PLAN for create, update, delete, and bulk', () => {
-    const cfg = loadConfig({ ...baseEnv(), APPLY_REQUIRES_PLAN: 'false' });
-    expect(cfg.applyRequiresPlan).toBe(false);
-    expect(cfg.createRequiresPlan).toBe(false);
-    expect(cfg.updateRequiresPlan).toBe(false);
-    expect(cfg.deleteRequiresPlan).toBe(false);
-    expect(cfg.bulkRequiresPlan).toBe(false);
-    expect(cfg.updateByQueryRequiresPlan).toBe(true);
-  });
-
-  it('allows operation-specific overrides', () => {
-    const cfg = loadConfig({
-      ...baseEnv(),
-      APPLY_REQUIRES_PLAN: 'true',
-      CREATE_REQUIRES_PLAN: 'false',
-      UPDATE_REQUIRES_PLAN: 'true',
-      DELETE_REQUIRES_PLAN: 'true',
-      BULK_REQUIRES_PLAN: 'true',
-    });
-    expect(cfg.createRequiresPlan).toBe(false);
-    expect(cfg.updateRequiresPlan).toBe(true);
-    expect(cfg.deleteRequiresPlan).toBe(true);
-    expect(cfg.bulkRequiresPlan).toBe(true);
-  });
-});
-
 /**
  * Host allowlist port/hostname tolerance — exercised through the
  * `hostMatchesAllowlist` helper. We test the behaviour indirectly

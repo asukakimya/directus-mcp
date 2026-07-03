@@ -5,7 +5,6 @@ import { normalizeJsonLike, isPlainObject } from '../safety/normalize.js';
 import { createItemsWithGuards } from '../directus/mutations.js';
 import { formatMutationText } from '../safety/textFormat.js';
 import { McpUserError } from '../directus/errors.js';
-import { assertDirectWriteAllowed } from '../safety/planPolicy.js';
 
 const Input = z.object({
   collection: z.string().min(1),
@@ -26,7 +25,7 @@ const Input = z.object({
 export const createItemsTool = {
   name: 'directus_create_items',
   description:
-    'Create multiple items serially. Each item has its own data + optional dedupe. Batch size limited by MUTATION_MAX_BATCH_SIZE. By default (allow_partial_apply=false), apply runs all-or-nothing preflight: if any item fails validation/dedupe, the entire batch is aborted with zero creates. When CREATE_REQUIRES_PLAN=true, dry_run=false is rejected — use dry_run=true then directus_apply_plan.',
+    'Create multiple items serially. Each item has its own data + optional dedupe. Batch size limited by MUTATION_MAX_BATCH_SIZE. By default (allow_partial_apply=false), apply runs all-or-nothing preflight: if any item fails validation/dedupe, the entire batch is aborted with zero creates. When BULK_REQUIRES_PLAN=true (default), dry_run=false is rejected — use dry_run=true then directus_apply_plan.',
   inputSchema: Input,
   handler: async (ctx: ToolContext, rawArgs: unknown) => {
     const args = Input.parse(rawArgs);
@@ -60,7 +59,13 @@ export const createItemsTool = {
 
     const dryRun = args.dry_run ?? ctx.config.mutationDryRunDefault;
 
-    if (!dryRun) assertDirectWriteAllowed(ctx.config, 'create', { collection: args.collection, tool: 'directus_create_items' });
+    if (!dryRun && ctx.config.bulkRequiresPlan) {
+      throw new McpUserError(
+        'APPLY_REQUIRES_PLAN',
+        `Direct bulk create is disabled by BULK_REQUIRES_PLAN=true. Run dry_run:true first to create a plan, then call directus_apply_plan.`,
+        { collection: args.collection },
+      );
+    }
 
     const result = await createItemsWithGuards(ctx.client, ctx.config, schema, items, {
       dryRun,

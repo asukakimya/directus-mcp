@@ -13,7 +13,6 @@
  *      "Server not initialized" on the second request.
  */
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
 
 const AUTH_TOKEN = 'smoke-test-token-1234';
 const PORT = '3399';
@@ -39,15 +38,6 @@ const child = spawn('node', ['dist/index.js'], {
 
 async function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
-}
-
-async function stopChild(exitCode) {
-  if (!child.killed) child.kill();
-  await Promise.race([
-    once(child, 'exit'),
-    sleep(1000),
-  ]);
-  process.exitCode = exitCode;
 }
 
 async function fetchRaw(url, opts) {
@@ -172,10 +162,12 @@ async function main() {
   if (missing.length > 0) throw new Error(`missing tools: ${missing.join(', ')}`);
 
   console.log('[http-smoke] OK — Streamable HTTP stateless mode works end-to-end (initialize + tools/list)');
-  await stopChild(0);
+  child.kill();
+  process.exit(0);
 }
 
-main().catch(async (err) => {
+main().catch((err) => {
   console.error('[http-smoke] FAILED:', err.message);
-  await stopChild(1);
+  child.kill();
+  process.exit(1);
 });

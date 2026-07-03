@@ -5,7 +5,6 @@ import { normalizeJsonLike, isPlainObject } from '../safety/normalize.js';
 import { createItemWithGuards } from '../directus/mutations.js';
 import { formatMutationText } from '../safety/textFormat.js';
 import { McpUserError } from '../directus/errors.js';
-import { assertDirectWriteAllowed } from '../safety/planPolicy.js';
 
 const Input = z.object({
   collection: z.string().min(1),
@@ -19,7 +18,7 @@ const Input = z.object({
 export const createItemTool = {
   name: 'directus_create_item',
   description:
-    'Create a single item. Validates fields against schema, runs dedupe check if provided, and supports dry_run. By default dry_run=true (set dry_run=false to actually write). When CREATE_REQUIRES_PLAN=true, dry_run=false is rejected — use dry_run=true then directus_apply_plan. data may be sent as object or as JSON string in data_json.',
+    'Create a single item. Validates fields against schema, runs dedupe check if provided, and supports dry_run. By default dry_run=true (set dry_run=false to actually write). When CREATE_REQUIRES_PLAN=true, dry_run=false is rejected. When CREATE_REQUIRES_PLAN=false (default), direct create is allowed with dry_run=false. data may be sent as object or as JSON string in data_json.',
   inputSchema: Input,
   handler: async (ctx: ToolContext, rawArgs: unknown) => {
     const args = Input.parse(rawArgs);
@@ -41,7 +40,14 @@ export const createItemTool = {
 
     const dryRun = args.dry_run ?? ctx.config.mutationDryRunDefault;
 
-    if (!dryRun) assertDirectWriteAllowed(ctx.config, 'create', { collection: args.collection, tool: 'directus_create_item' });
+    // APPLY_REQUIRES_PLAN enforcement: block direct apply.
+    if (!dryRun && ctx.config.createRequiresPlan) {
+      throw new McpUserError(
+        'APPLY_REQUIRES_PLAN',
+        `Direct create is disabled by CREATE_REQUIRES_PLAN=true. Run dry_run:true first to create a plan, then call directus_apply_plan.`,
+        { collection: args.collection },
+      );
+    }
 
     const result = await createItemWithGuards(ctx.client, ctx.config, schema, data, {
       dryRun,

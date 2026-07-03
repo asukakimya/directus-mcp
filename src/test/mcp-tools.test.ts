@@ -48,6 +48,11 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     readCompactTextMaxChars: 30000,
     readCompactFormat: 'lines' as const,
     applyRequiresPlan: false,
+    createRequiresPlan: false,
+    updateRequiresPlan: false,
+    deleteRequiresPlan: false,
+    bulkRequiresPlan: false,
+    updateByQueryRequiresPlan: true,
     planStore: 'memory' as const,
     planStoreDir: '/tmp/test-plans',
     planTtlSeconds: 900,
@@ -1292,5 +1297,163 @@ describe('formatReadItemsTextV2: final truncate consistency', () => {
     expect(result.meta.safeForFullListAnswer).toBe(false);
     expect(result.meta.truncatedForText).toBe(true);
     expect(result.meta.textRecordsComplete).toBe(false);
+  });
+});
+
+describe('Operation-specific plan policy', () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it('CREATE_REQUIRES_PLAN=false allows direct create_item dry_run:false', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: { id: 1, title: 'New' } } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext({
+      config: makeConfig({
+        applyRequiresPlan: true,
+        createRequiresPlan: false,
+        updateRequiresPlan: true,
+      }),
+    });
+    const result = await createItemTool.handler(ctx, {
+      collection: 'articles',
+      data: { title: 'New Article' },
+      dry_run: false,
+    });
+
+    expect(result.structuredContent.dryRun).toBe(false);
+    expect(result.structuredContent.created).toBeDefined();
+    // No planId — direct create succeeded.
+    expect(result.structuredContent.planId).toBeUndefined();
+  });
+
+  it('CREATE_REQUIRES_PLAN=true blocks direct create_item dry_run:false', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext({
+      config: makeConfig({
+        createRequiresPlan: true,
+      }),
+    });
+    await expectErrorCode(
+      () => createItemTool.handler(ctx, {
+        collection: 'articles',
+        data: { title: 'New Article' },
+        dry_run: false,
+      }),
+      'APPLY_REQUIRES_PLAN',
+    );
+  });
+
+  it('UPDATE_REQUIRES_PLAN=true blocks direct update_item dry_run:false', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles/1': { body: { data: { id: 1, title: 'A' } } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext({
+      config: makeConfig({
+        updateRequiresPlan: true,
+      }),
+    });
+    await expectErrorCode(
+      () => updateItemTool.handler(ctx, {
+        collection: 'articles',
+        key: 1,
+        data: { title: 'B' },
+        dry_run: false,
+      }),
+      'APPLY_REQUIRES_PLAN',
+    );
+  });
+
+  it('UPDATE_REQUIRES_PLAN=false allows direct update_item dry_run:false', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles/1': { body: { data: { id: 1, title: 'A', slug: null } } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext({
+      config: makeConfig({
+        updateRequiresPlan: false,
+        mutationRequireVerify: false,
+      }),
+    });
+    const result = await updateItemTool.handler(ctx, {
+      collection: 'articles',
+      key: 1,
+      data: { slug: 'a' },
+      dry_run: false,
+    });
+
+    expect(result.structuredContent.dryRun).toBe(false);
+    expect(result.structuredContent.planId).toBeUndefined();
+  });
+
+  it('Legacy: APPLY_REQUIRES_PLAN=true + no operation-specific → all require plan', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext({
+      config: makeConfig({
+        applyRequiresPlan: true,
+        createRequiresPlan: true,
+      }),
+    });
+    await expectErrorCode(
+      () => createItemTool.handler(ctx, {
+        collection: 'articles',
+        data: { title: 'New' },
+        dry_run: false,
+      }),
+      'APPLY_REQUIRES_PLAN',
+    );
+  });
+
+  it('Legacy: APPLY_REQUIRES_PLAN=false + no operation-specific → all allow direct', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: { id: 1, title: 'New' } } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext({
+      config: makeConfig({
+        applyRequiresPlan: false,
+        createRequiresPlan: false,
+        updateRequiresPlan: false,
+        deleteRequiresPlan: false,
+        bulkRequiresPlan: false,
+      }),
+    });
+    const result = await createItemTool.handler(ctx, {
+      collection: 'articles',
+      data: { title: 'New Article' },
+      dry_run: false,
+    });
+
+    expect(result.structuredContent.dryRun).toBe(false);
+    expect(result.structuredContent.planId).toBeUndefined();
   });
 });

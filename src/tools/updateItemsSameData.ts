@@ -5,7 +5,6 @@ import { normalizeJsonLike, isPlainObject } from '../safety/normalize.js';
 import { updateItemsSameDataWithGuards } from '../directus/mutations.js';
 import { formatMutationText } from '../safety/textFormat.js';
 import { McpUserError } from '../directus/errors.js';
-import { assertDirectWriteAllowed } from '../safety/planPolicy.js';
 
 const Input = z.object({
   collection: z.string().min(1),
@@ -21,7 +20,7 @@ const Input = z.object({
 export const updateItemsSameDataTool = {
   name: 'directus_update_items_same_data',
   description:
-    'Apply the SAME partial data to multiple keys using Directus bulk PATCH /items/{collection} endpoint. Use this when every key should receive identical changes. For per-key different data, use directus_batch_update_items instead. When BULK_REQUIRES_PLAN=true, dry_run=false is rejected — use dry_run=true then directus_apply_plan.',
+    'Apply the SAME partial data to multiple keys using Directus bulk PATCH /items/{collection} endpoint. Use this when every key should receive identical changes. For per-key different data, use directus_batch_update_items instead. When BULK_REQUIRES_PLAN=true (default), dry_run=false is rejected — use dry_run=true then directus_apply_plan.',
   inputSchema: Input,
   handler: async (ctx: ToolContext, rawArgs: unknown) => {
     const args = Input.parse(rawArgs);
@@ -50,7 +49,13 @@ export const updateItemsSameDataTool = {
 
     const dryRun = args.dry_run ?? ctx.config.mutationDryRunDefault;
 
-    if (!dryRun) assertDirectWriteAllowed(ctx.config, 'bulk', { collection: args.collection, tool: 'directus_update_items_same_data' });
+    if (!dryRun && ctx.config.bulkRequiresPlan) {
+      throw new McpUserError(
+        'APPLY_REQUIRES_PLAN',
+        `Direct apply (dry_run=false) is disabled. Run dry_run:true first to create a plan, then call directus_apply_plan.`,
+        { collection: args.collection },
+      );
+    }
 
     const result = await updateItemsSameDataWithGuards(ctx.client, ctx.config, schema, keys, data, {
       dryRun,
