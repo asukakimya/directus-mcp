@@ -69,16 +69,18 @@ export interface AppConfig {
   /** Compact-full format: 'lines' (default) or 'table'. */
   readCompactFormat: 'lines' | 'table';
 
-  /**
-   * Dry-run approval plan flow.
-   *
-   * When `applyRequiresPlan=true` (default), direct `dry_run:false` calls
-   * on mutation tools are rejected with `APPLY_REQUIRES_PLAN`. The model
-   * must first call with `dry_run:true` (which creates a plan), then call
-   * `directus_apply_plan` to actually write. This prevents the model from
-   * claiming success without actually writing.
-   */
+  /** Legacy fallback for operation-specific direct-write policy. */
   applyRequiresPlan: boolean;
+  /** Direct create/create_items require dry-run plan first. Defaults to `APPLY_REQUIRES_PLAN`. */
+  createRequiresPlan: boolean;
+  /** Direct update_item requires dry-run plan first. Defaults to `APPLY_REQUIRES_PLAN`. */
+  updateRequiresPlan: boolean;
+  /** Direct delete_items requires dry-run plan first. Defaults to `APPLY_REQUIRES_PLAN`. */
+  deleteRequiresPlan: boolean;
+  /** Direct batch/bulk update tools require dry-run plan first. Defaults to `APPLY_REQUIRES_PLAN`. */
+  bulkRequiresPlan: boolean;
+  /** update_by_query remains plan-first by default. */
+  updateByQueryRequiresPlan: boolean;
 
   /** Plan store backend: `file` (default, production) or `memory` (tests). */
   planStore: 'file' | 'memory';
@@ -105,6 +107,14 @@ function parseBool(value: string | undefined, fallback: boolean): boolean {
   if (['true', '1', 'yes', 'on'].includes(v)) return true;
   if (['false', '0', 'no', 'off'].includes(v)) return false;
   return fallback;
+}
+
+function parseOptionalBool(value: string | undefined): boolean | undefined {
+  if (value === undefined || value === '') return undefined;
+  const v = value.trim().toLowerCase();
+  if (['true', '1', 'yes', 'on'].includes(v)) return true;
+  if (['false', '0', 'no', 'off'].includes(v)) return false;
+  return undefined;
 }
 
 function parseInteger(value: string | undefined, fallback: number): number {
@@ -173,6 +183,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const mcpBindHost = (env.MCP_BIND_HOST ?? '0.0.0.0').trim() || '0.0.0.0';
   const mcpAllowedOrigins = parseList(env.MCP_ALLOWED_ORIGINS);
   const mcpAllowedHosts = parseList(env.MCP_ALLOWED_HOSTS).map((h) => h.toLowerCase());
+  const applyRequiresPlan = parseBool(env.APPLY_REQUIRES_PLAN, true);
 
   return {
     directusUrl,
@@ -206,7 +217,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     readCompactCellMaxChars: parseInteger(env.READ_COMPACT_CELL_MAX_CHARS, 160),
     readCompactTextMaxChars: parseInteger(env.READ_COMPACT_TEXT_MAX_CHARS, 30000),
     readCompactFormat: (env.READ_COMPACT_FORMAT ?? 'lines').trim().toLowerCase() === 'table' ? 'table' : 'lines',
-    applyRequiresPlan: parseBool(env.APPLY_REQUIRES_PLAN, true),
+    applyRequiresPlan,
+    createRequiresPlan: parseOptionalBool(env.CREATE_REQUIRES_PLAN) ?? applyRequiresPlan,
+    updateRequiresPlan: parseOptionalBool(env.UPDATE_REQUIRES_PLAN) ?? applyRequiresPlan,
+    deleteRequiresPlan: parseOptionalBool(env.DELETE_REQUIRES_PLAN) ?? applyRequiresPlan,
+    bulkRequiresPlan: parseOptionalBool(env.BULK_REQUIRES_PLAN) ?? applyRequiresPlan,
+    updateByQueryRequiresPlan: parseOptionalBool(env.UPDATE_BY_QUERY_REQUIRES_PLAN) ?? true,
     planStore: (env.PLAN_STORE ?? 'file').trim().toLowerCase() === 'memory' ? 'memory' : 'file',
     planStoreDir: (env.PLAN_STORE_DIR ?? '/tmp/directus-safe-mcp-plans').trim(),
     planTtlSeconds: parseInteger(env.PLAN_TTL_SECONDS, 900),

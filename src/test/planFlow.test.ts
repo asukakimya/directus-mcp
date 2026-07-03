@@ -5,6 +5,8 @@ import { createAuditLog } from '../../src/safety/audit.js';
 import { MemoryPlanStore } from '../../src/safety/plans.js';
 import { updateItemTool } from '../../src/tools/updateItem.js';
 import { createItemTool } from '../../src/tools/createItem.js';
+import { deleteItemsTool } from '../../src/tools/deleteItems.js';
+import { batchUpdateItemsTool } from '../../src/tools/batchUpdateItems.js';
 import { applyPlanTool } from '../../src/tools/applyPlan.js';
 import { cancelPlanTool } from '../../src/tools/cancelPlan.js';
 import type { ToolContext } from '../../src/mcp/server.js';
@@ -13,6 +15,7 @@ import { pino } from 'pino';
 import { expectErrorCode } from './helpers.js';
 
 function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+  const applyRequiresPlan = overrides.applyRequiresPlan ?? true;
   return {
     directusUrl: 'https://example.com',
     directusToken: 't',
@@ -43,7 +46,12 @@ function makeConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     readCompactCellMaxChars: 160,
     readCompactTextMaxChars: 30000,
     readCompactFormat: 'lines' as const,
-    applyRequiresPlan: true,
+    applyRequiresPlan,
+    createRequiresPlan: overrides.createRequiresPlan ?? applyRequiresPlan,
+    updateRequiresPlan: overrides.updateRequiresPlan ?? applyRequiresPlan,
+    deleteRequiresPlan: overrides.deleteRequiresPlan ?? applyRequiresPlan,
+    bulkRequiresPlan: overrides.bulkRequiresPlan ?? applyRequiresPlan,
+    updateByQueryRequiresPlan: overrides.updateByQueryRequiresPlan ?? true,
     planStore: 'memory' as const,
     planStoreDir: '/tmp/test-plans',
     planTtlSeconds: 900,
@@ -240,7 +248,54 @@ describe('Plan flow: dry-run → apply', () => {
     );
   });
 
-  it('APPLY_REQUIRES_PLAN=true blocks direct dry_run:false', async () => {
+  it('CREATE_REQUIRES_PLAN=false allows direct create dry_run:false', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+      '/items/articles': { body: { data: { id: 2, title: 'Created directly' } } },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext({ config: makeConfig({ createRequiresPlan: false }) });
+    const result = await createItemTool.handler(ctx, {
+      collection: 'articles',
+      data: { title: 'Created directly' },
+      dry_run: false,
+    });
+
+    expect(result.structuredContent.dryRun).toBe(false);
+    expect(result.structuredContent.planId).toBeUndefined();
+  });
+
+  it('CREATE_REQUIRES_PLAN=true blocks direct create but still returns a dry-run plan', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext({ config: makeConfig({ createRequiresPlan: true }) });
+    await expectErrorCode(
+      () => createItemTool.handler(ctx, {
+        collection: 'articles',
+        data: { title: 'Needs approval' },
+        dry_run: false,
+      }),
+      'APPLY_REQUIRES_PLAN',
+    );
+
+    const dryRunResult = await createItemTool.handler(ctx, {
+      collection: 'articles',
+      data: { title: 'Needs approval' },
+      dry_run: true,
+    });
+    expect(dryRunResult.structuredContent.dryRun).toBe(true);
+    expect(dryRunResult.structuredContent.planId).toEqual(expect.any(String));
+  });
+
+  it('UPDATE_REQUIRES_PLAN=true blocks direct update dry_run:false', async () => {
     const fetchMock = mockFetch({
       '/collections/articles': { body: articlesSchemaResponse },
       '/fields/articles': { body: articlesFieldsResponse },
@@ -249,7 +304,7 @@ describe('Plan flow: dry-run → apply', () => {
     });
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
 
-    const ctx = buildContext(); // applyRequiresPlan: true
+    const ctx = buildContext(); // updateRequiresPlan: true
     await expectErrorCode(
       () => updateItemTool.handler(ctx, {
         collection: 'articles',
@@ -261,7 +316,7 @@ describe('Plan flow: dry-run → apply', () => {
     );
   });
 
-  it('APPLY_REQUIRES_PLAN=false allows direct dry_run:false (backward compat)', async () => {
+  it('UPDATE_REQUIRES_PLAN=false allows direct update dry_run:false', async () => {
     const fetchMock = mockFetch({
       '/collections/articles': { body: articlesSchemaResponse },
       '/fields/articles': { body: articlesFieldsResponse },
@@ -270,7 +325,7 @@ describe('Plan flow: dry-run → apply', () => {
     });
     vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
 
-    const ctx = buildContext({ config: makeConfig({ applyRequiresPlan: false }) });
+    const ctx = buildContext({ config: makeConfig({ updateRequiresPlan: false }) });
     const result = await updateItemTool.handler(ctx, {
       collection: 'articles',
       key: 1,
@@ -278,8 +333,47 @@ describe('Plan flow: dry-run → apply', () => {
       dry_run: false,
     });
     expect(result.structuredContent.dryRun).toBe(false);
-    // No planId when applyRequiresPlan is false and dry_run is false.
+    // No planId when direct update is allowed and dry_run is false.
     expect(result.structuredContent.planId).toBeUndefined();
+  });
+
+  it('BULK_REQUIRES_PLAN=true blocks direct batch update dry_run:false', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext({ config: makeConfig({ bulkRequiresPlan: true }) });
+    await expectErrorCode(
+      () => batchUpdateItemsTool.handler(ctx, {
+        collection: 'articles',
+        items: [{ key: 1, data: { slug: 'bulk-change' } }],
+        dry_run: false,
+      }),
+      'APPLY_REQUIRES_PLAN',
+    );
+  });
+
+  it('DELETE_REQUIRES_PLAN=true blocks direct delete dry_run:false', async () => {
+    const fetchMock = mockFetch({
+      '/collections/articles': { body: articlesSchemaResponse },
+      '/fields/articles': { body: articlesFieldsResponse },
+      '/relations': { body: articlesRelationsResponse },
+    });
+    vi.spyOn(globalThis, 'fetch').mockImplementation(fetchMock);
+
+    const ctx = buildContext({ config: makeConfig({ allowDelete: true, deleteRequiresPlan: true }) });
+    await expectErrorCode(
+      () => deleteItemsTool.handler(ctx, {
+        collection: 'articles',
+        keys: [1],
+        confirm: 'DELETE articles:1',
+        dry_run: false,
+      }),
+      'APPLY_REQUIRES_PLAN',
+    );
   });
 
   it('cancel_plan marks pending plan as cancelled', async () => {

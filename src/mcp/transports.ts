@@ -171,8 +171,14 @@ export async function connectTransport(
 
     const shutdown = (signal: string) => {
       logger.info({ signal }, 'shutting down streamable-http server');
-      httpServer.close();
-      process.exit(0);
+      httpServer.close((err?: Error) => {
+        if (err) {
+          logger.error({ err }, 'streamable-http server shutdown failed');
+          process.exit(1);
+        }
+        process.exit(0);
+      });
+      setTimeout(() => process.exit(0), 5000).unref();
     };
     process.on('SIGINT', () => shutdown('SIGINT'));
     process.on('SIGTERM', () => shutdown('SIGTERM'));

@@ -116,7 +116,7 @@ function describeError(err: unknown): string {
 
   // Add NEXT_ACTION hints for common error codes to guide low-param models.
   if (err instanceof McpUserError) {
-    const nextAction = getNextActionForError(err.errorCode);
+    const nextAction = getNextActionForError(err);
     if (nextAction) {
       return `${baseMsg}\n\nNEXT_ACTION:\n${nextAction}`;
     }
@@ -125,13 +125,16 @@ function describeError(err: unknown): string {
   return baseMsg;
 }
 
-function getNextActionForError(code: string): string | null {
-  switch (code) {
+function getNextActionForError(err: McpUserError): string | null {
+  switch (err.errorCode) {
     case 'VERIFY_REQUIRED':
       return '- If this is a single update, call update tool with verify_fields:["company"] or a verify object matching current record values.\n- Do not use {"ai_info": true}.\n- If this is a bulk update, prefer directus_update_by_query_plan with verify_fields.';
     case 'VERIFY_FAILED':
       return '- The verify object does not match the current record.\n- Re-read the target record or use verify_fields to let MCP generate verify.\n- Do not assume markdown/special characters caused this error.';
     case 'APPLY_REQUIRES_PLAN':
+      if (typeof err.details.tool === 'string') {
+        return `- Call ${err.details.tool} with dry_run:true.\n- Then call directus_apply_plan after user approval.`;
+      }
       return '- First call mutation with dry_run:true.\n- Use returned plan_id or bundle_id.\n- On approval, call apply_plan or apply_plan_bundle.';
     case 'PLAN_ALREADY_APPLIED':
       return '- Do not apply this plan again.\n- Verify the target state.\n- If target state is correct, report already applied and verified.';

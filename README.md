@@ -108,7 +108,12 @@ node dist/index.js
 | `SCHEMA_TEXT_MAX_FIELDS` | `80` | `content.text` için şema detayında maksimum field sayısı |
 | `READ_TEXT_MAX_ROWS` | `10` | `content.text` için read/batch sonuçlarında maksimum satır |
 | `READ_TEXT_MAX_CHARS` | `12000` | `content.text` toplam karakter limiti (truncation marker dahil) |
-| `APPLY_REQUIRES_PLAN` | `true` | Direct `dry_run:false` reddedilir; model önce dry-run yapıp plan almalı, sonra `directus_apply_plan` çağırmalı |
+| `APPLY_REQUIRES_PLAN` | `true` | Operation-specific plan policy için legacy fallback |
+| `CREATE_REQUIRES_PLAN` | `APPLY_REQUIRES_PLAN` | Create direct yazma için plan zorunlu mu; production'da `false` yapılabilir |
+| `UPDATE_REQUIRES_PLAN` | `APPLY_REQUIRES_PLAN` | Direct update için dry-run + plan zorunlu mu |
+| `DELETE_REQUIRES_PLAN` | `APPLY_REQUIRES_PLAN` | Direct delete için dry-run + plan zorunlu mu |
+| `BULK_REQUIRES_PLAN` | `APPLY_REQUIRES_PLAN` | Batch/bulk update araçları için dry-run + plan zorunlu mu |
+| `UPDATE_BY_QUERY_REQUIRES_PLAN` | `true` | Query tabanlı toplu update plan/bundle akışında kalır |
 | `PLAN_STORE` | `file` | Plan store backend: `file` (production) veya `memory` (test) |
 | `PLAN_STORE_DIR` | `/tmp/directus-safe-mcp-plans` | File-based plan store dizini (0600 izinleri) |
 | `PLAN_TTL_SECONDS` | `900` | Plan TTL (saniye, default 15 dk) |
@@ -214,7 +219,7 @@ Bu akış, modelin "uyguladım" deyip gerçekte yazmaması problemini kökten ç
 ### Kritik kurallar
 
 - `dry_run:true` **asla** veri yazmaz. Kullanıcı onayı sadece apply iznidir; gerçek yazma `directus_apply_plan` çağrısıyla olur.
-- `APPLY_REQUIRES_PLAN=true` (default) iken direct `dry_run:false` mutation tool çağrısı `APPLY_REQUIRES_PLAN` hatası alır.
+- Operation-specific policy açıksa direct `dry_run:false` çağrısı `APPLY_REQUIRES_PLAN` hatası alır. `CREATE_REQUIRES_PLAN=false` ile create doğrudan yazabilir; update/delete/bulk için plan zorunlu kalabilir.
 - Her plan sadece bir kez uygulanabilir (idempotency). İkinci apply → `PLAN_ALREADY_APPLIED`.
 - **Concurrent apply protection**: plan claim atomik `pending → applying` geçişi yapar. Eşzamanlı iki apply çağrısından ilki claim alır, ikincisi `PLAN_ALREADY_IN_PROGRESS` alır.
 - Süresi dolmuş plan → `PLAN_EXPIRED`. Yeni dry-run gerekir.
@@ -304,7 +309,7 @@ Delete işlemleri de aynı plan akışını kullanır:
 
 ### Local debug (plan akışı olmadan)
 
-`APPLY_REQUIRES_PLAN=false` ile direct `dry_run:false` çağrılabilir (eski davranış). Sadece local debug için önerilir.
+`CREATE_REQUIRES_PLAN=false` ile create işlemleri doğrudan yazabilir. Tüm mutation tiplerinde eski davranış için `APPLY_REQUIRES_PLAN=false` ve operation-specific ayarları boş/unset bırakılabilir; sadece local debug için önerilir.
 
 ---
 
@@ -693,7 +698,7 @@ Tüm kabul kriterleri (spec §25) karşılanır:
 27. ✅ `directus_apply_plan` tool: dry-run plan'ını uygular, read-back verification yapar, idempotent (plan sadece bir kez apply edilir).
 28. ✅ `directus_cancel_plan` tool: pending plan'ı iptal eder.
 29. ✅ Dry-run mutation response'ları `planId` döndürür; `content.text` "DRY-RUN ONLY — hiçbir veri yazılmadı" içerir.
-30. ✅ `APPLY_REQUIRES_PLAN=true` (default): direct `dry_run:false` reddedilir, model önce plan almalı.
+30. ✅ Operation-specific plan policy: create/update/delete/bulk ayrı env'lerle yönetilir; `APPLY_REQUIRES_PLAN` legacy fallback olarak kalır.
 31. ✅ Plan store: file-based (default) / memory, 0600 izinleri, TTL, max bytes, checksum.
 32. ✅ Delete işlemleri de plan akışını kullanır (confirm token plan içinde saklanır).
 33. ✅ Read-back mismatch post-write: warning olarak döner (throw etmez), plan `applied_with_warning` terminal durumu alır, tekrar apply edilemez.
